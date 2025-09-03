@@ -11,7 +11,6 @@ Get Episeerr running in 5 minutes.
 ## Docker Setup
 
 ```yaml
-version: '3.8'
 services:
   episeerr:
     image: vansmak/episeerr:latest
