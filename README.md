@@ -6,6 +6,26 @@ This project started as scratching my own itch - I wanted more granular series m
 
 [![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/vansmak)
 
+- [Episeerr](#episeerr)
+  - [What It Does](#what-it-does)
+  - [Quick Start](#quick-start)
+    - [Full Setup (All Features)](#full-setup-all-features)
+    - [Basic Setup (Works Immediately)](#basic-setup-works-immediately)
+    - [Optional Additions (Add Only What You Want)](#optional-additions-add-only-what-you-want)
+  - [How It Works](#how-it-works)
+    - [Smart Rules (NEW!)](#smart-rules-new)
+    - [Grace Periods (NEW!)](#grace-periods-new)
+    - [Example: Popular Show Rule](#example-popular-show-rule)
+    - [Storage Gate](#storage-gate)
+  - [Three Ways to Use Episeerr (Pick What You Need)](#three-ways-to-use-episeerr-pick-what-you-need)
+    - [🎯 **Just Episode Selection**](#-just-episode-selection)
+    - [⚡ **Add Viewing Automation**](#-add-viewing-automation)
+    - [💾 **Add Storage Management**](#-add-storage-management)
+  - [Key Benefits](#key-benefits)
+  - [What's New in v2.2](#whats-new-in-v22)
+  - [Documentation](#documentation)
+  - [Support](#support)
+
 ## What It Does
 
 Episeerr automates your TV library with three simple features:
@@ -19,7 +39,6 @@ Episeerr automates your TV library with three simple features:
 ### Full Setup (All Features)
 
 ```yaml
-version: '3.8'
 services:
   episeerr:
     image: vansmak/episeerr:latest
@@ -47,6 +66,8 @@ services:
     volumes:
       - ./config:/app/config
       - ./logs:/app/logs
+      - ./data:/app/data
+      - ./temp:/app/temp
     ports:
       - "5002:5002"
     restart: unless-stopped
@@ -62,6 +83,7 @@ services:
 - **Storage cleanup**: Set threshold in Scheduler page
 - **Smart rules**: Create rules for automatic management
 - **Viewing automation**: Add webhooks for next episode ready
+- **Add `watched` tag in Sonarr**: Removes these series from Episeer Series Management
 
 ---
 
@@ -162,14 +184,8 @@ Automatic cleanup when storage gets low (optional upgrade).
 ✅ **Storage-Aware**: Cleanup respects your storage limits
 
 ---
+Screenshot <img width="1856" height="1301" alt="Episeerr" src="https://github.com/user-attachments/assets/ddad6213-ea53-4af9-9997-2a1f605b827c" />
 
-## What's New in v2.2
-
-🎯 **New Dropdown UI**: Replace confusing text fields with clear dropdowns  
-   ** pick type, episodes or seasons and then the # of
-🧠 **Intuitive Grace Logic**: Grace periods now protect recent watches  
-🔧 **Fixed Season Bug**: Properly handles end-of-season transitions  
-💾 **Storage-Aware Dormant**: Dormant cleanup respects storage gates
 
 ---
 
