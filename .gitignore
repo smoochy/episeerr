@@ -2,8 +2,8 @@ __pycache__/
 venv/
 node_modules
 preferences.json
-README.md
 .env
 /logs/*
 /temp/*
 /config/*
+/data/*

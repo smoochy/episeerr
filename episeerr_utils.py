@@ -80,6 +80,7 @@ else:
     logger.info("Auto-create tags DISABLED - please create tags manually if using tag-based workflows")
 
 
+
 def get_sonarr_headers():
     """Get headers for Sonarr API requests."""
     return {
@@ -222,44 +223,478 @@ def create_episeerr_select_tag():
     except Exception as e:
         logger.error(f"Error creating 'episeerr_select' tag: {str(e)}")
         return None
-
-def initialize_episeerr():
-    """Initialize Episeerr with optional tag creation"""
-    logger.debug("Entering initialize_episeerr()")
+def get_or_create_rule_tag_id(rule_name):
+    """
+    Create episeerr_<rulename> tag in Sonarr if doesn't exist.
+    Returns tag ID.
     
-    if AUTO_CREATE_TAGS:
-        logger.info("Attempting to create/verify required tags...")
+    Args:
+        rule_name: Name of the rule (e.g., 'one_at_a_time')
         
-        logger.debug("Creating episeerr_default tag")
-        default_tag_id = create_episeerr_default_tag()
-        if default_tag_id is None:
-            logger.warning("Failed to initialize 'episeerr_default' tag. Tag-based workflows may not function.")
-        else:
-            logger.info(f"Initialized 'episeerr_default' tag with ID {default_tag_id}")
-
-        logger.debug("Creating episeerr_select tag")
-        select_tag_id = create_episeerr_select_tag()
-        if select_tag_id is None:
-            logger.warning("Failed to initialize 'episeerr_select' tag. Episode selection workflows may not function.")
-        else:
-            logger.info(f"Initialized 'episeerr_select' tag with ID {select_tag_id}")
-    else:
-        logger.info("Tag auto-creation disabled. Checking for existing tags...")
-        create_episeerr_default_tag()  # Just checks, doesn't create
-        create_episeerr_select_tag()   # Just checks, doesn't create
-        
-        if EPISEERR_DEFAULT_TAG_ID is None and EPISEERR_SELECT_TAG_ID is None:
-            logger.warning("No episeerr tags found. Please create 'episeerr_default' and 'episeerr_select' tags manually in Sonarr.")
-            logger.info("Or set EPISEERR_AUTO_CREATE_TAGS=true to auto-create them.")
-
-    logger.debug("Checking unmonitored downloads")
+    Returns:
+        int: Tag ID or None if failed
+    """
     try:
-        check_and_cancel_unmonitored_downloads()
+        tag_label = f"episeerr_{rule_name}"
+        headers = get_sonarr_headers()
+        
+        # Check if tag already exists
+        tags_response = requests.get(f"{SONARR_URL}/api/v3/tag", headers=headers, timeout=10)
+        
+        if not tags_response.ok:
+            logger.error(f"Failed to get tags. Status: {tags_response.status_code}")
+            return None
+        
+        # Look for existing tag
+        for tag in tags_response.json():
+            if tag['label'].lower() == tag_label.lower():
+                logger.debug(f"Found existing tag '{tag_label}' with ID {tag['id']}")
+                return tag['id']
+        
+        # Tag doesn't exist - create it
+        logger.info(f"Creating new tag '{tag_label}'")
+        tag_create_response = requests.post(
+            f"{SONARR_URL}/api/v3/tag",
+            headers=headers,
+            json={"label": tag_label},
+            timeout=10
+        )
+        
+        if tag_create_response.ok:
+            tag_id = tag_create_response.json().get('id')
+            logger.info(f"✓ Created tag '{tag_label}' with ID {tag_id}")
+            return tag_id
+        else:
+            logger.error(f"Failed to create tag '{tag_label}': {tag_create_response.text}")
+            return None
+            
     except Exception as e:
-        logger.error(f"Error in initial download check: {str(e)}")
+        logger.error(f"Error creating rule tag '{rule_name}': {str(e)}")
+        return None
 
-    logger.info("Episeerr initialization complete")
-    logger.debug("Exiting initialize_episeerr()")
+
+def get_tag_mapping():
+    """
+    Get dict of tag_id → tag_name from Sonarr.
+    
+    Returns:
+        dict: {tag_id: tag_label} or empty dict on failure
+    """
+    try:
+        headers = get_sonarr_headers()
+        response = requests.get(f"{SONARR_URL}/api/v3/tag", headers=headers, timeout=10)
+        
+        if response.ok:
+            return {tag['id']: tag['label'] for tag in response.json()}
+        else:
+            logger.error(f"Failed to get tag mapping: {response.status_code}")
+            return {}
+            
+    except Exception as e:
+        logger.error(f"Error getting tag mapping: {str(e)}")
+        return {}
+
+def get_episeerr_delay_profile_id():
+    """
+    Find the custom delay profile that should contain episeerr tags.
+    Looks for any profile that already has at least one episeerr_* tag.
+    Falls back to first non-default profile if none found.
+    """
+    try:
+        headers = get_sonarr_headers()
+        resp = requests.get(f"{SONARR_URL}/api/v3/delayprofile", headers=headers, timeout=10)
+        
+        if not resp.ok:
+            logger.error(f"Failed to get delay profiles: {resp.status_code}")
+            return None
+        
+        profiles = resp.json()
+        
+        # Look for profile with any episeerr tag
+        for p in profiles:
+            tags = p.get('tags', [])
+            if tags:
+                # Get tag names
+                tag_map = get_tag_mapping()
+                tag_names = [tag_map.get(tid, '').lower() for tid in tags]
+                if any(n.startswith('episeerr_') for n in tag_names):
+                    logger.info(f"Using Episeerr delay profile ID {p['id']}")
+                    return p['id']
+        
+        # No episeerr profile found → use first non-default (highest priority)
+        for p in profiles:
+            if p.get('order', 0) < 2147483647:  # default has max int order
+                logger.info(f"No episeerr profile found - using first custom profile ID {p['id']}")
+                return p['id']
+        
+        logger.warning("No suitable delay profile found")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error finding Episeerr delay profile: {str(e)}")
+        return None
+
+
+
+# ============================================================================
+# NEW TAG SYSTEM: Control tags only in delay profile
+# ============================================================================
+
+def update_delay_profile_with_control_tags():
+    """
+    Update delay profile to ONLY include the three control tags:
+    - episeerr_default
+    - episeerr_select  
+    - episeerr_delay
+    
+    Rule tags (episeerr_one_at_a_time, episeerr_get1keepseason, etc.) are 
+    NOT included to allow immediate downloads after processing.
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    logger.info("=== Updating delay profile with control tags only ===")
+    
+    try:
+        profile_id = get_episeerr_delay_profile_id()
+        if not profile_id:
+            logger.warning("No custom delay profile found - skipping sync")
+            return False
+        
+        headers = get_sonarr_headers()
+        
+        # Get current profile
+        get_resp = requests.get(f"{SONARR_URL}/api/v3/delayprofile/{profile_id}", headers=headers)
+        if not get_resp.ok:
+            logger.error(f"Failed to get delay profile: {get_resp.status_code}")
+            return False
+        
+        profile = get_resp.json()
+        
+        # Build set of ONLY the three control tags
+        control_tags = set()
+        
+        # 1. episeerr_default
+        default_id = create_episeerr_default_tag()
+        if default_id:
+            control_tags.add(default_id)
+            logger.debug(f"Added episeerr_default (ID: {default_id})")
+        else:
+            logger.warning("Could not create/find episeerr_default tag")
+        
+        # 2. episeerr_select
+        select_id = create_episeerr_select_tag()
+        if select_id:
+            control_tags.add(select_id)
+            logger.debug(f"Added episeerr_select (ID: {select_id})")
+        else:
+            logger.warning("Could not create/find episeerr_select tag")
+        
+        # 3. episeerr_delay (NEW)
+        delay_id = get_or_create_rule_tag_id('delay')
+        if delay_id:
+            control_tags.add(delay_id)
+            logger.debug(f"Added episeerr_delay (ID: {delay_id})")
+        else:
+            logger.warning("Could not create/find episeerr_delay tag")
+        
+        # Update profile with ONLY these three tags
+        profile['tags'] = list(control_tags)
+        put_resp = requests.put(
+            f"{SONARR_URL}/api/v3/delayprofile/{profile_id}",
+            headers=headers,
+            json=profile
+        )
+        
+        if put_resp.ok:
+            logger.info(f"✓ Updated delay profile with {len(control_tags)} control tags (default, select, delay)")
+            logger.info(f"  Control tag IDs: {sorted(control_tags)}")
+            return True
+        else:
+            logger.error(f"Failed to update delay profile: {put_resp.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Delay profile control tag update failed: {str(e)}")
+        return False
+
+
+def update_delay_with_all_episeerr_tags(config=None):
+    """
+    DEPRECATED - Use update_delay_profile_with_control_tags() instead.
+    
+    This function maintained for backward compatibility. The new system only adds
+    control tags (default, select, delay) to the delay profile instead of all 
+    rule tags, allowing immediate downloads after processing.
+    """
+    logger.info("Note: update_delay_with_all_episeerr_tags() now uses control tags only")
+    return update_delay_profile_with_control_tags()
+
+
+
+def remove_rule_tag_from_delay_profile(rule_name):
+    """
+    Remove a specific episeerr_<rulename> tag from the delay profile.
+    Never removes episeerr_default or episeerr_select.
+    """
+    try:
+        profile_id = get_episeerr_delay_profile_id()
+        if not profile_id:
+            return False
+        
+        tag_id = get_or_create_rule_tag_id(rule_name)
+        if not tag_id:
+            return False
+        
+        headers = get_sonarr_headers()
+        get_resp = requests.get(f"{SONARR_URL}/api/v3/delayprofile/{profile_id}", headers=headers)
+        if not get_resp.ok:
+            return False
+        
+        profile = get_resp.json()
+        current_tags = profile.get('tags', [])
+        
+        if tag_id in current_tags:
+            current_tags.remove(tag_id)
+            profile['tags'] = current_tags
+            
+            put_resp = requests.put(
+                f"{SONARR_URL}/api/v3/delayprofile/{profile_id}",
+                headers=headers,
+                json=profile
+            )
+            
+            if put_resp.ok:
+                logger.info(f"Removed episeerr_{rule_name} (ID {tag_id}) from delay profile")
+                return True
+            else:
+                logger.error(f"Failed to update profile: {put_resp.text}")
+                return False
+        else:
+            logger.debug(f"Tag episeerr_{rule_name} not present in delay profile")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Error removing rule tag from delay profile: {str(e)}")
+        return False
+        
+
+
+def get_series_from_sonarr(series_id):
+    """
+    Fetch series data from Sonarr API.
+    
+    Args:
+        series_id: Sonarr series ID
+        
+    Returns:
+        dict: Series data or None if failed/not found
+    """
+    try:
+        headers = get_sonarr_headers()
+        response = requests.get(
+            f"{SONARR_URL}/api/v3/series/{series_id}",
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.ok:
+            return response.json()
+        elif response.status_code == 404:
+            # Series doesn't exist - this is normal when series are deleted
+            logger.debug(f"Series {series_id} not found in Sonarr (404)")
+            return None
+        else:
+            logger.error(f"Failed to get series {series_id}: {response.status_code}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error getting series {series_id}: {str(e)}")
+        return None
+
+
+def update_series_in_sonarr(series):
+    """
+    Update series in Sonarr (typically for tag changes).
+    
+    Args:
+        series: Full series object from Sonarr
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        headers = get_sonarr_headers()
+        response = requests.put(
+            f"{SONARR_URL}/api/v3/series/{series['id']}",
+            headers=headers,
+            json=series,
+            timeout=10
+        )
+        
+        if response.ok:
+            logger.debug(f"Updated series {series['id']} in Sonarr")
+            return True
+        else:
+            logger.error(f"Failed to update series {series['id']}: {response.status_code}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error updating series: {str(e)}")
+        return False
+
+
+def sync_rule_tag_to_sonarr(series_id, new_rule_name):
+    """
+    Update Sonarr tags to reflect rule assignment.
+    - Remove ALL episeerr_* tags (except episeerr_select/default)
+    - Add episeerr_<new_rule_name> tag
+    - Leave all other user tags untouched
+    
+    Args:
+        series_id: Sonarr series ID
+        new_rule_name: Name of the rule to assign
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Get current series data
+        series = get_series_from_sonarr(series_id)
+        if not series:
+            logger.debug(f"Series {series_id} not found for tag sync (likely deleted)")
+            return False
+        
+        # Get tag mapping
+        tag_mapping = get_tag_mapping()
+        if not tag_mapping:
+            logger.warning("Could not get tag mapping - proceeding without it")
+            tag_mapping = {}
+        
+        # Get current tags
+        current_tags = series.get('tags', [])
+        updated_tags = []
+        
+        # Remove all episeerr_* tags (except episeerr_select which needs special handling)
+        for tag_id in current_tags:
+            tag_name = tag_mapping.get(tag_id, '').lower()
+            
+            # Keep if:
+            # - Not an episeerr_ tag (user tags like 1080p, anime, etc.)
+            # - OR is episeerr_select (needs special handling in webhook, removed separately)
+            # Remove: episeerr_default (workflow complete), episeerr_<old_rulename> (old assignment)
+            if not tag_name.startswith('episeerr_') or tag_name == 'episeerr_select':
+                updated_tags.append(tag_id)
+            else:
+                logger.debug(f"Removing tag '{tag_name}' from series {series_id}")
+        
+        # Add new rule tag
+        new_tag_id = get_or_create_rule_tag_id(new_rule_name)
+        if new_tag_id:
+            if new_tag_id not in updated_tags:
+                updated_tags.append(new_tag_id)
+                logger.info(f"Added tag 'episeerr_{new_rule_name}' to series {series_id}")
+        else:
+            logger.error(f"Failed to get/create tag for rule '{new_rule_name}'")
+            return False
+        
+        # Update series with new tags
+        series['tags'] = updated_tags
+        return update_series_in_sonarr(series)
+        
+    except Exception as e:
+        logger.error(f"Error syncing rule tag for series {series_id}: {str(e)}")
+        return False
+
+
+def remove_all_episeerr_tags(series_id):
+    """
+    Remove all episeerr_* tags from a series (used when unassigning).
+    
+    Args:
+        series_id: Sonarr series ID
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        series = get_series_from_sonarr(series_id)
+        if not series:
+            return False
+        
+        tag_mapping = get_tag_mapping()
+        current_tags = series.get('tags', [])
+        
+        # Keep only non-episeerr tags
+        updated_tags = [
+            tag_id for tag_id in current_tags
+            if not tag_mapping.get(tag_id, '').lower().startswith('episeerr_')
+        ]
+        
+        if len(updated_tags) != len(current_tags):
+            series['tags'] = updated_tags
+            logger.info(f"Removed episeerr tags from series {series_id}")
+            return update_series_in_sonarr(series)
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error removing episeerr tags from series {series_id}: {str(e)}")
+        return False
+
+
+def validate_series_tag(series_id, expected_rule):
+    """
+    Check if series tag matches expected rule in config.
+    Handles multiple episeerr_* tags (logs error, auto-fixes to config rule).
+    
+    Args:
+        series_id: Sonarr series ID
+        expected_rule: Rule name from config
+        
+    Returns:
+        tuple: (matches: bool, actual_tag_rule: str or None)
+    """
+    try:
+        series = get_series_from_sonarr(series_id)
+        if not series:
+            return (False, None)
+        
+        tag_mapping = get_tag_mapping()
+        
+        # Find all episeerr_* tags (excluding special ones)
+        episeerr_tags = []
+        for tag_id in series.get('tags', []):
+            tag_name = tag_mapping.get(tag_id, '')
+            if tag_name.startswith('episeerr_'):
+                rule_name = tag_name.replace('episeerr_', '')
+                # Skip special workflow tags
+                if rule_name not in ['select', 'default']:
+                    episeerr_tags.append(rule_name)
+        
+        # No rule tags found
+        if len(episeerr_tags) == 0:
+            return (False, None)
+        
+        # Multiple rule tags (ERROR STATE)
+        elif len(episeerr_tags) > 1:
+            logger.error(f"Series {series_id} has multiple episeerr tags: {episeerr_tags}")
+            # Auto-fix to expected rule
+            sync_rule_tag_to_sonarr(series_id, expected_rule)
+            return (False, expected_rule)
+        
+        # Single rule tag (NORMAL STATE)
+        else:
+            actual_rule = episeerr_tags[0]
+            # FIXED: Case-insensitive comparison (Sonarr lowercases all tags)
+            matches = (actual_rule.lower() == expected_rule.lower())
+            return (matches, actual_rule)
+            
+    except Exception as e:
+        logger.error(f"Error validating series tag for {series_id}: {str(e)}")
+        return (False, None)
+    
+
 
 
 def unmonitor_series(series_id, headers):
@@ -887,7 +1322,7 @@ def check_and_cancel_unmonitored_downloads():
                     else:
                         logger.warning(f"Could not get episode info for ID {item['episodeId']}")
                 else:
-                    logger.info(f"Series {series.get('title')} does not have episeerr tags - skipping")
+                    logger.debug(f"Series {series.get('title')} already processed (no control tags) - skipping download queue check")
         
         # Log summary
         logger.info(f"Cancellation check complete. Cancelled {cancelled_count} unmonitored downloads for episeerr series")

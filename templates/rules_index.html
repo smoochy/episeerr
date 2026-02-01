@@ -1,773 +1,538 @@
 {% extends "base.html" %}
 
 {% block content %}
-<!-- Stats Cards with CSS Grid -->
-<div class="stats-row">
-    <!-- Disk Usage -> System Status -->
-    <a href="{{ SONARR_URL }}/system/status" target="_blank" class="text-decoration-none">
-        <div class="card stats-card text-white clickable-card">
-            <div class="card-body">
-                <h5><i class="fas fa-hdd me-2"></i>Disk Usage <i class="fas fa-external-link-alt ms-1" style="font-size: 0.7em; opacity: 0.7;"></i></h5>
-                <h2 id="disk-usage">
-                    {% if sonarr_stats.disk_stats %}
-                        {{ sonarr_stats.disk_stats.used_gb }}GB
-                    {% else %}
-                        --
-                    {% endif %}
-                </h2>
-                <small class="text-muted">
-                    {% if sonarr_stats.disk_stats %}
-                        {{ sonarr_stats.disk_stats.free_gb }}GB free ({{ sonarr_stats.disk_stats.usage_percent }}%)
-                    {% else %}
-                        Unable to get disk info
-                    {% endif %}
-                </small>
-            </div>
-        </div>
-    </a>
-    
-    <!-- Downloads -> Activity/Queue -->
-    <a href="{{ SONARR_URL }}/activity/queue" target="_blank" class="text-decoration-none">
-        <div class="card stats-card text-white clickable-card">
-            <div class="card-body">
-                <h5><i class="fas fa-download me-2"></i>Downloads <i class="fas fa-external-link-alt ms-1" style="font-size: 0.7em; opacity: 0.7;"></i></h5>
-                <h2 id="download-queue">
-                    {% if sonarr_stats.queue_stats %}
-                        {{ sonarr_stats.queue_stats.downloading }}
-                    {% else %}
-                        --
-                    {% endif %}
-                </h2>
-                <small class="text-muted">
-                    {% if sonarr_stats.queue_stats %}
-                        {{ sonarr_stats.queue_stats.queued }} queued, {{ sonarr_stats.queue_stats.total }} total
-                    {% else %}
-                        Unable to get queue info
-                    {% endif %}
-                </small>
-            </div>
-        </div>
-    </a>
-    
-    <!-- Missing -> Wanted/Missing -->
-    <a href="{{ SONARR_URL }}/wanted/missing" target="_blank" class="text-decoration-none">
-        <div class="card stats-card text-white clickable-card">
-            <div class="card-body">
-                <h5><i class="fas fa-exclamation-triangle me-2"></i>Missing <i class="fas fa-external-link-alt ms-1" style="font-size: 0.7em; opacity: 0.7;"></i></h5>
-                <h2 id="missing-episodes">
-                    {% if sonarr_stats.missing_stats %}
-                        {{ sonarr_stats.missing_stats.count }}
-                    {% else %}
-                        --
-                    {% endif %}
-                </h2>
-                <small class="text-muted">monitored episodes</small>
-            </div>
-        </div>
-    </a>
-    
-    <!-- Recent -> Activity/History -->
-    <a href="{{ SONARR_URL }}/activity/history" target="_blank" class="text-decoration-none">
-        <div class="card stats-card text-white clickable-card">
-            <div class="card-body">
-                <h5><i class="fas fa-clock me-2"></i>Recent <i class="fas fa-external-link-alt ms-1" style="font-size: 0.7em; opacity: 0.7;"></i></h5>
-                <h2 id="recent-activity">
-                    {% if sonarr_stats.recent_stats %}
-                        {{ sonarr_stats.recent_stats.imported_today }}
-                    {% else %}
-                        --
-                    {% endif %}
-                </h2>
-                <small class="text-muted">imported today</small>
-            </div>
-        </div>
-    </a>
-</div>
+<div class="container-fluid">
 
-<!-- Rules Management -->
-<div class="row">
-    <div class="col-md-4">
-        <div class="card">
-            <!-- Desktop Header -->
-            <div class="card-header desktop-only">
-                <div class="d-flex justify-content-between align-items-center">
-                    <h5><i class="fas fa-list me-2"></i>Rules</h5>
-                    <div>
-                        <a href="{{ url_for('cleanup') }}" class="btn btn-outline-light btn-sm me-2" title="Clean up orphaned series from rules">
-                            <i class="fas fa-broom me-1"></i>Clean Config
-                        </a>
-                        <a href="{{ url_for('create_rule') }}" class="btn btn-primary btn-sm">
-                            <i class="fas fa-plus me-1"></i> New Rule
-                        </a>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Mobile Header -->
-            <div class="card-header mobile-only">
-                <h5><i class="fas fa-list me-2"></i>Rules</h5>
-                <div class="mobile-header-buttons">
-                    <a href="{{ url_for('cleanup') }}" class="btn btn-outline-light">
-                        <i class="fas fa-broom me-1"></i>Clean Config
-                    </a>
-                    <a href="{{ url_for('create_rule') }}" class="btn btn-primary">
-                        <i class="fas fa-plus me-1"></i>New Rule
-                    </a>
-                </div>
-            </div>
-            
-            <div class="card-body">
-                {% set sorted_rules = [] %}
-                {% set default_rule_name = config.get('default_rule') %}
-                
-                {# First, add the default rule if it exists #}
-                {% if default_rule_name and default_rule_name in config.rules %}
-                    {% set _ = sorted_rules.append((default_rule_name, config.rules[default_rule_name])) %}
-                {% endif %}
-                
-                {# Then add all other rules alphabetically #}
-                {% for rule_name, rule_details in config.rules.items()|sort %}
-                    {% if rule_name != default_rule_name %}
-                        {% set _ = sorted_rules.append((rule_name, rule_details)) %}
-                    {% endif %}
-                {% endfor %}
-                
-                <!-- Desktop Rules List -->
-                <div class="desktop-only">
-                    {% for rule_name, rule_details in sorted_rules %}
-                    <div class="d-flex justify-content-between align-items-center mb-2 p-2 border rounded {% if rule_name == default_rule_name %}border-warning bg-warning bg-opacity-10{% endif %}">
-                        <div>
-                            <div class="d-flex align-items-center">
-                                <strong>{{ rule_name.replace('_', ' ').title() }}</strong>
-                                {% if rule_name == default_rule_name %}
-                                <span class="badge bg-warning text-dark ms-2">
-                                    <i class="fas fa-star me-1"></i>Default
-                                </span>
-                                {% endif %}
-                            </div>
-                            <small class="text-muted">{{ rule_details.series|length }} series</small>
-                        </div>
-                        <div class="btn-group btn-group-sm">
-                            <a href="{{ url_for('edit_rule', rule_name=rule_name) }}" class="btn btn-outline-primary btn-sm">
-                                <i class="fas fa-edit"></i>
-                            </a>
-                            {% if rule_name != default_rule_name %}
-                            <form method="POST" action="{{ url_for('delete_rule', rule_name=rule_name) }}" style="display: inline;">
-                                <button type="submit" class="btn btn-outline-danger btn-sm" onclick="return confirm('Delete this rule?')">
-                                    <i class="fas fa-trash"></i>
-                                </button>
-                            </form>
-                            {% endif %}
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-                
-                <!-- Mobile Rules List -->
-                <div class="mobile-only">
-                    {% for rule_name, rule_details in sorted_rules %}
-                    <div class="rule-item-mobile {% if rule_name == default_rule_name %}default{% endif %}">
-                        <div class="rule-info-mobile">
-                            <div class="d-flex align-items-center">
-                                <strong>{{ rule_name.replace('_', ' ').title() }}</strong>
-                                {% if rule_name == default_rule_name %}
-                                <span class="badge bg-warning text-dark ms-2">
-                                    <i class="fas fa-star me-1"></i>Default
-                                </span>
-                                {% endif %}
-                            </div>
-                            <small class="text-muted">{{ rule_details.series|length }} series</small>
-                        </div>
-                        <div class="rule-actions-mobile">
-                            <a href="{{ url_for('edit_rule', rule_name=rule_name) }}" class="btn btn-outline-primary btn-touch">
-                                <i class="fas fa-edit me-1"></i>Edit
-                            </a>
-                            {% if rule_name != default_rule_name %}
-                            <form method="POST" action="{{ url_for('delete_rule', rule_name=rule_name) }}" style="display: inline; flex: 1;">
-                                <button type="submit" class="btn btn-outline-danger btn-touch w-100" onclick="return confirm('Delete this rule?')">
-                                    <i class="fas fa-trash me-1"></i>Delete
-                                </button>
-                            </form>
-                            {% endif %}
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-            </div>
-        </div>
+  <!-- Filters + View Toggle + Selected Count -->
+  <div class="series-header mb-3 p-3 bg-dark border border-secondary rounded">
+    <div class="row g-3 align-items-end">
 
-        <!-- Quick Links Card -->
-        <div class="card mt-3">
-            <div class="card-header">
-                <h6><i class="fas fa-bookmark me-2"></i>Quick Links</h6>
-            </div>
-            <div class="card-body quick-links-compact">
-                <div class="d-grid gap-2">
-                    {% for service_key, service in services.items() %}
-                    <a href="{{ service.url }}" target="_blank" class="btn btn-outline-primary btn-sm d-flex align-items-center justify-content-center">
-                        <i class="{{ service.icon }} me-2"></i>{{ service.name }}
-                    </a>
-                    {% endfor %}
-                </div>
-            </div>
+      <!-- View Toggle -->
+      <div class="col-auto">
+        <div class="btn-group" role="group">
+          <button type="button" class="btn btn-outline-primary active" id="gridViewBtn" onclick="setView('grid')">
+            <i class="fas fa-th"></i> Grid
+          </button>
+          <button type="button" class="btn btn-outline-primary" id="tableViewBtn" onclick="setView('table')">
+            <i class="fas fa-tasks"></i> Manage
+          </button>
         </div>
+      </div>
+
+      <!-- Search -->
+      <div class="col-md-3">
+        <div class="input-group input-group-sm">
+          <span class="input-group-text bg-dark border-secondary"><i class="fas fa-search text-muted"></i></span>
+          <input type="text" id="seriesSearchInput" class="form-control bg-dark text-light border-secondary" placeholder="Search series...">
+        </div>
+      </div>
+
+      <!-- Rule Filter -->
+      <div class="col-md-3">
+        <select id="ruleFilterSelect" class="form-select form-select-sm bg-dark text-light border-secondary">
+          <option value="">All Rules</option>
+          <option value="Unassigned">Unassigned</option>
+          {% for rule_name in config.rules.keys() | sort %}
+          <option value="{{ rule_name }}">{{ rule_name.replace('_', ' ').title() }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <!-- Status Filter -->
+      <div class="col-md-3">
+        <select id="statusFilterSelect" class="form-select form-select-sm bg-dark text-light border-secondary">
+          <option value="">All Status</option>
+          <option value="continuing">Continuing</option>
+          <option value="ended">Ended</option>
+          <option value="upcoming">Upcoming</option>
+        </select>
+      </div>
+
+      <!-- Selected Count -->
+      <div class="col-auto ms-auto">
+        <span class="text-muted small fw-bold" id="selectedCount">0 selected</span>
+      </div>
+
     </div>
+  </div>
 
-    <div class="col-md-8">
-    <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <h5><i class="fas fa-tv me-2"></i>Series Management</h5>
-        </div>
-        <div class="card-body">
-            <!-- Rule Assignment Form -->
-            <form method="POST" action="{{ url_for('assign_rules') }}" id="assignment-form">
-                <div class="row mb-3">
-                    <div class="col-md-3">
-                        <select name="rule_name" class="form-select" required>
-                            <option value="">Select Rule to Assign</option>
-                            {% for rule_name in config.rules.keys() %}
-                            <option value="{{ rule_name }}">{{ rule_name.replace('_', ' ').title() }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div class="col-md-9">
-                        <div class="btn-group w-100">
-                            <button type="submit" class="btn btn-primary">
-                                <i class="fas fa-link me-1"></i>Assign Selected
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary" onclick="selectAll()">
-                                Select All
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary" onclick="selectNone()">
-                                Select None
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Enhanced Series Table with Sorting -->
-                <div class="table-responsive" style="max-height: 600px; overflow-y: auto;">
-                    <table class="table table-dark table-striped table-sm" id="seriesTable">
-                        <thead class="sticky-top">
-                            <tr>
-                                <th width="50">
-                                    <input type="checkbox" id="select-all-checkbox" onchange="toggleAll()">
-                                </th>
-                                <th class="sortable" data-column="title">
-                                    Series <i class="fas fa-sort sort-icon"></i>
-                                </th>
-                                <th class="sortable" data-column="rule">
-                                    Current Rule <i class="fas fa-sort sort-icon"></i>
-                                </th>
-                                <th class="sortable" data-column="status">
-                                    Status <i class="fas fa-sort sort-icon"></i>
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody id="seriesTableBody">
-                            <!-- Series rows will be populated by JavaScript -->
-                        </tbody>
-                    </table>
-                </div>
-            </form>
-           
-            <!-- Unassign Button -->
-            <form method="POST" action="{{ url_for('unassign_series') }}" class="mt-3" onsubmit="return copySelectedSeries(this)">
-                <div class="d-flex justify-content-between align-items-center">
-                    <button type="submit" class="btn btn-warning">
-                        <i class="fas fa-unlink me-1"></i>Unassign Selected Series
-                    </button>
-                </div>
-            </form>
-        </div>
+  <!-- Bulk Actions Bar (appears in table/manage view) -->
+  <div class="bulk-actions-bar mb-4 p-3 bg-dark border border-primary rounded" id="bulkActionsBar" style="display: none;">
+    <div class="row g-3 align-items-center">
+      <div class="col-auto">
+        <strong><span id="bulkSelectedCount">0</span> selected</strong>
+      </div>
+      <div class="col-md-3">
+        <select id="bulkRuleSelect" class="form-select form-select-sm bg-dark text-light border-secondary">
+          <option value="">Assign to Rule...</option>
+          {% for rule_name in config.rules.keys() | sort %}
+          <option value="{{ rule_name }}">{{ rule_name.replace('_', ' ').title() }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-sm btn-primary" onclick="assignSelected()">
+          <i class="fas fa-check me-1"></i> Assign
+        </button>
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-sm btn-outline-danger" onclick="unassignSelected()">
+          <i class="fas fa-unlink me-1"></i> Unassign
+        </button>
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-sm btn-outline-secondary" onclick="clearSelection()">
+          <i class="fas fa-ban me-1"></i> Clear
+        </button>
+      </div>
     </div>
+  </div>
+
+  <!-- Grid View -->
+  <div id="seriesGridView">
+    <div class="row g-3" id="seriesGrid"></div>
+  </div>
+
+  <!-- Table View -->
+  <div id="seriesTableView" class="table-responsive" style="display: none;">
+    <table class="table table-dark table-hover table-sm">
+      <thead class="sticky-top bg-dark">
+        <tr>
+          <th width="50" class="text-center">
+            <input type="checkbox" id="select-all-checkbox" onchange="toggleAll()">
+          </th>
+          <th class="sortable" data-sort="title" style="cursor: pointer;">
+            Series <i class="fas fa-sort ms-1"></i>
+          </th>
+          <th class="sortable" data-sort="rule" style="cursor: pointer;">
+            Current Rule <i class="fas fa-sort ms-1"></i>
+          </th>
+          <th class="sortable" data-sort="status" style="cursor: pointer;">
+            Status <i class="fas fa-sort ms-1"></i>
+          </th>
+        </tr>
+      </thead>
+      <tbody id="series-table-body"></tbody>
+    </table>
+  </div>
+
+  <!-- Hidden form for submissions -->
+  <form method="POST" action="{{ url_for('assign_rules') }}" id="assignment-form" style="display: none;">
+    <input type="hidden" name="rule_name" id="hidden-rule-name">
+  </form>
+
 </div>
-</div>
+
+<style>
+/* Series Grid Styles */
+.series-grid-col {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center; /* Center cards on all screen sizes */
+}
+
+@media (min-width: 1600px) { .series-grid-col { width: 12.5%; } }
+@media (min-width: 1400px) and (max-width: 1599px) { .series-grid-col { width: 14.285%; } }
+@media (min-width: 1200px) and (max-width: 1399px) { .series-grid-col { width: 16.666667%; } }
+@media (min-width: 992px) and (max-width: 1199px) { .series-grid-col { width: 20%; } }
+@media (min-width: 768px) and (max-width: 991px) { .series-grid-col { width: 25%; } }
+@media (min-width: 576px) and (max-width: 767px) { .series-grid-col { width: 33.333333%; } }
+@media (max-width: 575px) { .series-grid-col { width: 50%; } }
+
+.series-grid-card {
+  background: var(--card-bg, #1a1d29);
+  border: 1px solid var(--border-color, #2d3142);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+  height: 100%;
+  width: 100%; /* Fill the flex container */
+}
+
+.series-grid-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  border-color: var(--brand-color, #6366f1);
+}
+
+.series-poster-container {
+  position: relative;
+  width: 100%;
+  padding-top: 150%;
+  background: var(--poster-bg, #0f1419);
+  overflow: hidden;
+}
+
+.series-poster {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.series-checkbox-overlay {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 10;
+}
+
+.series-checkbox-overlay input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.series-info {
+  padding: 12px;
+}
+
+.series-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 2.8em;
+}
+
+.series-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.series-badge {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.badge-rule {
+  background: var(--primary-color, #6366f1);
+  color: white;
+}
+
+.badge-unassigned {
+  background: var(--secondary-bg, #6b7280);
+  color: white;
+}
+
+.badge-continuing {
+  background: var(--success-bg, #10b981);
+  color: white;
+}
+
+.badge-ended {
+  background: var(--danger-bg, #ef4444);
+  color: white;
+}
+
+.badge-upcoming {
+  background: var(--info-bg, #3b82f6);
+  color: white;
+}
+
+.status-continuing { color: #10b981; }
+.status-ended { color: #ef4444; }
+.status-upcoming { color: #3b82f6; }
+</style>
 {% endblock %}
 
-{% block scripts %}
+{% block extra_js %}
 <script>
-function updateSonarrStats() {
-    fetch('/api/sonarr-stats')
-        .then(response => response.json())
-        .then(data => {
-            if (data.status === 'success' && data.stats) {
-                const stats = data.stats;
-                
-                // Update disk usage
-                if (stats.disk_stats) {
-                    document.getElementById('disk-usage').textContent = `${stats.disk_stats.used_gb}GB`;
-                    const diskSubtext = document.querySelector('#disk-usage').parentElement.querySelector('.text-muted');
-                    diskSubtext.textContent = `${stats.disk_stats.free_gb}GB free (${stats.disk_stats.usage_percent}%)`;
-                }
-                
-                // Update download queue
-                if (stats.queue_stats) {
-                    document.getElementById('download-queue').textContent = stats.queue_stats.downloading;
-                    const queueSubtext = document.querySelector('#download-queue').parentElement.querySelector('.text-muted');
-                    queueSubtext.textContent = `${stats.queue_stats.queued} queued, ${stats.queue_stats.total} total`;
-                }
-                
-                // Update missing episodes
-                if (stats.missing_stats) {
-                    document.getElementById('missing-episodes').textContent = stats.missing_stats.count;
-                }
-                
-                // Update recent activity
-                if (stats.recent_stats) {
-                    document.getElementById('recent-activity').textContent = stats.recent_stats.imported_today;
-                }
-            }
-        })
-        .catch(error => {
-            console.error('Error updating Sonarr stats:', error);
-        });
+
+
+// ────────────────────────────────────────────────
+// Globals
+// ────────────────────────────────────────────────
+const allSeriesData = {{ all_series|tojson|safe }} || [];
+let currentView = localStorage.getItem('episeerr-series-view') || 'grid';
+let currentSort = { column: 'title', direction: 'asc' };
+const SONARR_URL = '{{ SONARR_URL }}';
+
+console.log('Episeerr loaded:', allSeriesData.length, 'series');
+
+// ────────────────────────────────────────────────
+// Initialize on page load
+// ────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  setView(currentView, false);
+  renderView();
+  setupEventListeners();
+  updateSelectedCount();
+});
+
+// ────────────────────────────────────────────────
+// View Toggle (Grid / Table)
+// ────────────────────────────────────────────────
+function setView(view, save = true) {
+  currentView = view;
+
+  document.getElementById('seriesGridView').style.display = view === 'grid' ? 'block' : 'none';
+  document.getElementById('seriesTableView').style.display = view === 'table' ? 'block' : 'none';
+  document.getElementById('bulkActionsBar').style.display = view === 'table' ? 'block' : 'none';
+
+  document.getElementById('gridViewBtn').classList.toggle('active', view === 'grid');
+  document.getElementById('tableViewBtn').classList.toggle('active', view === 'table');
+
+  if (save) localStorage.setItem('episeerr-series-view', view);
+
+  renderView();
 }
 
-function selectAll() {
-    document.querySelectorAll('.series-checkbox').forEach(cb => cb.checked = true);
-    document.getElementById('select-all-checkbox').checked = true;
+// ────────────────────────────────────────────────
+// Render current view (grid or table)
+// ────────────────────────────────────────────────
+function renderView() {
+  const filtered = getFilteredAndSortedSeries();
+
+  if (currentView === 'grid') {
+    renderGridView(filtered);
+  } else {
+    renderTableView(filtered);
+  }
+
+  updateSelectedCount();
 }
 
-function selectNone() {
-    document.querySelectorAll('.series-checkbox').forEach(cb => cb.checked = false);
-    document.getElementById('select-all-checkbox').checked = false;
+// ────────────────────────────────────────────────
+// Filter + Sort Logic
+// ────────────────────────────────────────────────
+function getFilteredAndSortedSeries() {
+  let data = [...allSeriesData];
+
+  // Search
+  const search = (document.getElementById('seriesSearchInput')?.value || '').toLowerCase().trim();
+  if (search) {
+    data = data.filter(s => s.title.toLowerCase().includes(search));
+  }
+
+  // Rule filter
+  const ruleVal = document.getElementById('ruleFilterSelect')?.value;
+  if (ruleVal) {
+    if (ruleVal === 'Unassigned') {
+      data = data.filter(s => !s.assigned_rule || s.assigned_rule === 'None');
+    } else {
+      data = data.filter(s => s.assigned_rule === ruleVal);
+    }
+  }
+
+  // Status filter
+  const statusVal = document.getElementById('statusFilterSelect')?.value;
+  if (statusVal) {
+    data = data.filter(s => s.status === statusVal);
+  }
+
+  // Sort
+  data.sort((a, b) => {
+    let va, vb;
+    switch (currentSort.column) {
+      case 'title':
+        va = a.title.toLowerCase();
+        vb = b.title.toLowerCase();
+        break;
+      case 'rule':
+        va = (a.assigned_rule || 'zzz').toLowerCase();
+        vb = (b.assigned_rule || 'zzz').toLowerCase();
+        break;
+      case 'status':
+        const prio = { continuing: 1, upcoming: 2, ended: 3 };
+        va = prio[a.status] || 4;
+        vb = prio[b.status] || 4;
+        break;
+      default: return 0;
+    }
+    if (typeof va === 'string') {
+      return currentSort.direction === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+    }
+    return currentSort.direction === 'asc' ? va - vb : vb - va;
+  });
+
+  return data;
+}
+
+// ────────────────────────────────────────────────
+// Grid Rendering
+// ────────────────────────────────────────────────
+function renderGridView(series) {
+  const container = document.getElementById('seriesGrid');
+  if (!container) return;
+
+  if (!series.length) {
+    container.innerHTML = '<div class="col-12 text-center py-5 text-muted">No series match your filters</div>';
+    return;
+  }
+
+  container.innerHTML = series.map(s => {
+    const poster = s.images?.find(i => i.coverType === 'poster')?.remoteUrl || '/static/placeholder.png';
+    const rule = s.assigned_rule && s.assigned_rule !== 'None'
+      ? s.assigned_rule.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+      : 'Unassigned';
+    const ruleCls = rule === 'Unassigned' ? 'badge-unassigned' : 'badge-rule';
+
+    return `
+      <div class="col series-grid-col">
+        <div class="card series-grid-card">
+          <div class="series-poster-container">
+            <img src="${poster}" class="series-poster" alt="${s.title}" loading="lazy" onerror="this.src='/static/placeholder.png'">
+            
+          </div>
+          <div class="series-info">
+            <div class="series-title">${s.title}</div>
+            <div class="series-badges">
+              <span class="badge series-badge ${ruleCls}">${rule}</span>
+              <span class="badge series-badge badge-${s.status || 'unknown'}">${getStatusText(s)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ────────────────────────────────────────────────
+// Table Rendering
+// ────────────────────────────────────────────────
+function renderTableView(series) {
+  const tbody = document.getElementById('series-table-body');
+  if (!tbody) return;
+
+  tbody.innerHTML = '';
+
+  if (!series.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-muted">No series match your filters</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = series.map(s => {
+    const rule = s.assigned_rule && s.assigned_rule !== 'None'
+      ? s.assigned_rule.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+      : 'Unassigned';
+    const ruleCls = rule === 'Unassigned' ? 'bg-secondary' : 'bg-primary';
+
+    return `
+      <tr>
+        <td class="text-center">
+          <input type="checkbox" class="series-checkbox" value="${s.id}" onchange="updateSelectedCount()">
+        </td>
+        <td>
+          <a href="${SONARR_URL}/series/${s.titleSlug || encodeURIComponent(s.title)}" target="_blank" class="text-light text-decoration-none">
+            ${s.title}
+          </a>
+        </td>
+        <td><span class="badge ${ruleCls}">${rule}</span></td>
+        <td><span class="status-${s.status || 'unknown'}">${getStatusText(s)}</span></td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// ────────────────────────────────────────────────
+// Status Helper
+// ────────────────────────────────────────────────
+function getStatusText(s) {
+  const map = {
+    continuing: '📺 Continuing',
+    ended: '🏁 Ended',
+    upcoming: '🔜 Upcoming'
+  };
+  return map[s.status] || '❓ Unknown';
+}
+
+// ────────────────────────────────────────────────
+// Selection & Bulk Actions
+// ────────────────────────────────────────────────
+function updateSelectedCount() {
+  const count = document.querySelectorAll('.series-checkbox:checked').length;
+  document.getElementById('selectedCount').textContent = `${count} selected`;
+  document.getElementById('bulkSelectedCount').textContent = count;
+  // Bar visibility is controlled by view mode, not selection count
 }
 
 function toggleAll() {
-    const selectAllCb = document.getElementById('select-all-checkbox');
-    document.querySelectorAll('.series-checkbox').forEach(cb => cb.checked = selectAllCb.checked);
+  const checked = document.getElementById('select-all-checkbox').checked;
+  document.querySelectorAll('.series-checkbox').forEach(cb => cb.checked = checked);
+  updateSelectedCount();
 }
 
-function copySelectedSeries(form) {
-    const selectedSeries = document.querySelectorAll('.series-checkbox:checked');
-    if (selectedSeries.length === 0) {
-        alert('Please select at least one series to unassign.');
-        return false;
-    }
-    
-    // Copy selected series IDs to the unassign form
-    selectedSeries.forEach(checkbox => {
-        const input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = 'series_ids';
-        input.value = checkbox.value;
-        form.appendChild(input);
-    });
-    
-    return confirm(`Unassign ${selectedSeries.length} selected series from all rules?`);
+function clearSelection() {
+  document.querySelectorAll('.series-checkbox').forEach(cb => cb.checked = false);
+  document.getElementById('select-all-checkbox').checked = false;
+  updateSelectedCount();
 }
 
-function toggleAutoAssign() {
-    const checkbox = document.getElementById('auto_assign_toggle');
-    const enabled = checkbox.checked;
-    
-    // Show loading state
-    checkbox.disabled = true;
-    
-    // Get current global settings and update
-    fetch('/api/global-settings')
-        .then(response => response.json())
-        .then(data => {
-            if (data.status === 'success') {
-                const settings = data.settings;
-                settings.auto_assign_new_series = enabled;
-                
-                // Update the setting
-                return fetch('/api/global-settings', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(settings)
-                });
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.status === 'success') {
-                console.log('Auto-assign setting updated:', enabled);
-                
-                // Show brief success feedback
-                const label = document.querySelector('label[for="auto_assign_toggle"]');
-                const originalText = label.textContent;
-                label.innerHTML = `<i class="fas fa-check text-success me-1"></i>${originalText}`;
-                setTimeout(() => {
-                    label.textContent = originalText;
-                }, 2000);
-            } else {
-                console.error('Failed to update setting:', data.message);
-                checkbox.checked = !enabled; // Revert on error
-            }
-        })
-        .catch(error => {
-            console.error('Error updating auto-assign setting:', error);
-            checkbox.checked = !enabled; // Revert on error
-        })
-        .finally(() => {
-            checkbox.disabled = false;
-        });
+function assignSelected() {
+  const rule = document.getElementById('bulkRuleSelect')?.value;
+  if (!rule) return alert('Please select a rule to assign to.');
+
+  const ids = Array.from(document.querySelectorAll('.series-checkbox:checked')).map(cb => cb.value);
+  if (!ids.length) return alert('No series selected.');
+
+  const form = document.getElementById('assignment-form');
+  form.querySelector('[name="rule_name"]').value = rule;
+
+  ids.forEach(id => {
+    const inp = document.createElement('input');
+    inp.type = 'hidden';
+    inp.name = 'series_ids';
+    inp.value = id;
+    form.appendChild(inp);
+  });
+
+  form.submit();
 }
 
-// FIXED: Auto-refresh with proper change detection
-class RulesPageAutoRefresh {
-    constructor() {
-        this.lastSeriesData = new Map(); // Store actual series data with assignments
-        this.checkInterval = 45000; // 45 seconds
-        this.init();
-    }
+function unassignSelected() {
+  const ids = Array.from(document.querySelectorAll('.series-checkbox:checked')).map(cb => cb.value);
+  if (!ids.length) return alert('No series selected.');
+  if (!confirm(`Unassign ${ids.length} series from all rules?`)) return;
 
-    init() {
-        // Only run on rules page
-        if (!window.location.pathname.match(/^\/(index)?$/)) {
-            return;
-        }
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '{{ url_for("unassign_series") }}';
 
-        // Wait for initial data load
-        setTimeout(() => {
-            this.captureCurrentState();
-            this.startChecking();
-        }, 2000);
-    }
+  ids.forEach(id => {
+    const inp = document.createElement('input');
+    inp.type = 'hidden';
+    inp.name = 'series_ids';
+    inp.value = id;
+    form.appendChild(inp);
+  });
 
-    captureCurrentState() {
-        // Capture the actual series data from the enhanced table
-        if (seriesData && seriesData.length > 0) {
-            this.lastSeriesData.clear();
-            seriesData.forEach(series => {
-                this.lastSeriesData.set(series.id.toString(), {
-                    title: series.title,
-                    assigned_rule: series.assigned_rule || 'None',
-                    status: series.status
-                });
-            });
-            console.log(`Captured ${this.lastSeriesData.size} series with assignments`);
-        }
-    }
-
-    startChecking() {
-        setInterval(() => {
-            this.checkForChanges();
-        }, this.checkInterval);
-    }
-
-    async checkForChanges() {
-        try {
-            // Get fresh data from the API
-            const response = await fetch('/api/series-with-status');
-            if (!response.ok) return;
-            
-            const data = await response.json();
-            if (!data.success || !data.series) return;
-            
-            const currentSeriesData = new Map();
-            data.series.forEach(series => {
-                currentSeriesData.set(series.id.toString(), {
-                    title: series.title,
-                    assigned_rule: series.assigned_rule || 'None',
-                    status: series.status
-                });
-            });
-
-            // Check for changes
-            let hasChanges = false;
-            let changeType = '';
-
-            // Check for new or removed series
-            if (currentSeriesData.size !== this.lastSeriesData.size) {
-                hasChanges = true;
-                changeType = currentSeriesData.size > this.lastSeriesData.size ? 'New series detected' : 'Series removed';
-            }
-
-            // Check for assignment changes
-            if (!hasChanges) {
-                for (const [seriesId, currentData] of currentSeriesData) {
-                    const lastData = this.lastSeriesData.get(seriesId);
-                    if (!lastData || lastData.assigned_rule !== currentData.assigned_rule) {
-                        hasChanges = true;
-                        changeType = 'Rule assignments updated';
-                        break;
-                    }
-                }
-            }
-
-            if (hasChanges) {
-                console.log(`Detected changes: ${changeType}`);
-                this.refreshPage(changeType);
-            }
-
-        } catch (error) {
-            console.error('Error checking for changes:', error);
-        }
-    }
-
-    refreshPage(reason) {
-        console.log(`Auto-refreshing page: ${reason}`);
-        
-        this.showRefreshNotification(reason);
-        
-        setTimeout(() => {
-            window.location.reload();
-        }, 1500);
-    }
-
-    showRefreshNotification(reason) {
-        const notification = document.createElement('div');
-        notification.innerHTML = `
-            <div class="alert alert-info alert-dismissible fade show position-fixed" 
-                 style="top: 20px; right: 20px; z-index: 1050; min-width: 300px;">
-                <i class="fas fa-sync-alt me-2"></i>
-                <strong>Auto-updating:</strong> ${reason}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            </div>
-        `;
-        
-        document.body.appendChild(notification);
-        
-        setTimeout(() => {
-            if (notification.parentNode) {
-                notification.parentNode.removeChild(notification);
-            }
-        }, 3000);
-    }
-}
-// Enhanced Series Table with Sorting
-let seriesData = [];
-let currentSort = {
-    column: localStorage.getItem('episeerr-sort-column') || null,
-    direction: localStorage.getItem('episeerr-sort-direction') || 'asc'
-};
-
-// Load enhanced series data with status information
-function loadEnhancedSeriesData() {
-    fetch('/api/series-with-status')
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                seriesData = data.series;
-                
-                // Apply saved sort if exists
-                if (currentSort.column) {
-                    applySavedSort();
-                } else {
-                    renderTable();
-                }
-            } else {
-                console.error('Failed to load enhanced series data:', data.message);
-            }
-        })
-        .catch(error => {
-            console.error('Error loading enhanced series data:', error);
-        });
+  document.body.appendChild(form);
+  form.submit();
 }
 
-// Apply saved sort without changing indicators
-function applySavedSort() {
-    if (currentSort.column) {
-        // Sort the data
-        sortDataByColumn(currentSort.column);
-        
-        // Update visual indicator
-        const header = document.querySelector(`[data-column="${currentSort.column}"]`);
-        if (header) {
-            header.classList.add(`sort-${currentSort.direction}`);
-        }
+// ────────────────────────────────────────────────
+// Event Listeners
+// ────────────────────────────────────────────────
+function setupEventListeners() {
+  ['seriesSearchInput', 'ruleFilterSelect', 'statusFilterSelect'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      if (el.tagName === 'INPUT') el.addEventListener('input', renderView);
+      else el.addEventListener('change', renderView);
     }
-    
-    renderTable();
-}
+  });
 
-// Setup sorting handlers
-function setupSortHandlers() {
-    document.querySelectorAll('.sortable').forEach(header => {
-        header.addEventListener('click', function() {
-            const column = this.dataset.column;
-            sortTable(column);
-        });
-    });
-}
-
-// Sort table by column
-function sortTable(column) {
-    // Reset all sort indicators
-    document.querySelectorAll('.sortable').forEach(header => {
-        header.classList.remove('sort-asc', 'sort-desc');
-    });
-    
-    // Determine sort direction
-    if (currentSort.column === column) {
+  document.querySelectorAll('.sortable').forEach(h => {
+    h.addEventListener('click', () => {
+      const col = h.dataset.sort;
+      if (currentSort.column === col) {
         currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
-    } else {
+      } else {
+        currentSort.column = col;
         currentSort.direction = 'asc';
-    }
-    currentSort.column = column;
-    
-    // Save sort preferences
-    localStorage.setItem('episeerr-sort-column', currentSort.column);
-    localStorage.setItem('episeerr-sort-direction', currentSort.direction);
-    
-    // Update sort indicator
-    const header = document.querySelector(`[data-column="${column}"]`);
-    header.classList.add(`sort-${currentSort.direction}`);
-    
-    // Sort and render
-    sortDataByColumn(column);
-    renderTable();
-}
-
-// Separate function to sort data by column
-function sortDataByColumn(column) {
-    seriesData.sort((a, b) => {
-        let valueA, valueB;
-        
-        switch(column) {
-            case 'title':
-                valueA = a.title.toLowerCase();
-                valueB = b.title.toLowerCase();
-                break;
-            case 'rule':
-                valueA = (a.assigned_rule === 'None' ? 'zzz_unassigned' : a.assigned_rule.toLowerCase());
-                valueB = (b.assigned_rule === 'None' ? 'zzz_unassigned' : b.assigned_rule.toLowerCase());
-                break;
-            case 'status':
-                const statusPriority = {
-                    'continuing': 1,
-                    'upcoming': 2,
-                    'ended': 3,
-                    'unknown': 4
-                };
-                valueA = statusPriority[a.status] || 4;
-                valueB = statusPriority[b.status] || 4;
-                break;
-            default:
-                return 0;
-        }
-        
-        let result;
-        if (typeof valueA === 'string') {
-            result = valueA.localeCompare(valueB);
-        } else {
-            result = valueA - valueB;
-        }
-        
-        return currentSort.direction === 'desc' ? -result : result;
+      }
+      renderView();
     });
+  });
 }
-
-// Render the table with current data
-function renderTable() {
-    const tbody = document.getElementById('seriesTableBody');
-    if (!tbody) return;
-    
-    tbody.innerHTML = '';
-    
-    seriesData.forEach(series => {
-        const row = createSeriesRow(series);
-        tbody.appendChild(row);
-    });
-    
-    updateCheckboxStates();
-}
-
-// Create a series table row
-function createSeriesRow(series) {
-    const row = document.createElement('tr');
-    
-    const statusClass = `status-${series.status || 'unknown'}`;
-    const statusText = getStatusText(series);
-    
-    const ruleText = series.assigned_rule && series.assigned_rule !== 'None' 
-        ? series.assigned_rule.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
-        : 'Unassigned';
-    
-    const ruleBadgeClass = series.assigned_rule && series.assigned_rule !== 'None' 
-        ? 'bg-primary' : 'bg-secondary';
-    
-    row.innerHTML = `
-        <td>
-            <input type="checkbox" name="series_ids" value="${series.id}" class="series-checkbox">
-        </td>
-        <td>
-            <a href="{{ SONARR_URL }}/series/${series.titleSlug || series.title.toLowerCase().replace(/\\s+/g, '-')}" target="_blank" class="text-decoration-none text-light">
-                <strong>${series.title}</strong>
-                <i class="fas fa-external-link-alt ms-1 text-muted" style="font-size: 0.8em;"></i>
-            </a>
-        </td>
-        <td>
-            <span class="badge ${ruleBadgeClass}">${ruleText}</span>
-        </td>
-        <td>
-            <span class="${statusClass}">${statusText}</span>
-            <br><small class="text-muted">${getStatusDetails(series)}</small>
-        </td>
-    `;
-    
-    return row;
-}
-
-// Get formatted status text
-function getStatusText(series) {
-    switch(series.status) {
-        case 'continuing': return '📺 Continuing';
-        case 'ended': return '🏁 Ended';
-        case 'upcoming': return '🔜 Upcoming';
-        default: return '❓ Unknown';
-    }
-}
-
-// Get status details
-function getStatusDetails(series) {
-    if (series.lastEpisode) {
-        const lastDate = new Date(series.lastEpisode);
-        const year = lastDate.getFullYear();
-        const monthDay = lastDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        return `Last: ${monthDay}, ${year}`;
-    } else if (series.year) {
-        return `Year: ${series.year}`;
-    }
-    return 'No date info';
-}
-
-// Update checkbox states after re-rendering
-function updateCheckboxStates() {
-    const selectAllCheckbox = document.getElementById('select-all-checkbox');
-    const seriesCheckboxes = document.querySelectorAll('.series-checkbox');
-    
-    if (selectAllCheckbox && seriesCheckboxes.length > 0) {
-        const allChecked = Array.from(seriesCheckboxes).every(cb => cb.checked);
-        const someChecked = Array.from(seriesCheckboxes).some(cb => cb.checked);
-        
-        selectAllCheckbox.checked = allChecked;
-        selectAllCheckbox.indeterminate = someChecked && !allChecked;
-    }
-}
-document.addEventListener('DOMContentLoaded', function() {
-    // Update Sonarr stats immediately
-    updateSonarrStats();
-    
-    // Auto-refresh Sonarr stats every 30 seconds
-    setInterval(updateSonarrStats, 30000);
-    
-    // Load auto-assign setting
-    fetch('/api/global-settings')
-        .then(response => response.json())
-        .then(data => {
-            if (data.status === 'success') {
-                const autoAssign = data.settings.auto_assign_new_series || false;
-                const toggle = document.getElementById('auto_assign_toggle');
-                if (toggle) {
-                    toggle.checked = autoAssign;
-                }
-            }
-        })
-        .catch(error => console.error('Error loading auto-assign setting:', error));
-    
-    // Initialize enhanced sortable series table
-    loadEnhancedSeriesData();
-    setupSortHandlers();
-    
-    // Initialize auto-refresh with better change detection
-    new RulesPageAutoRefresh();
-});
 </script>
 {% endblock %}
