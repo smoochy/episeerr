@@ -1,4 +1,4 @@
-__version__ = "3.1.3"
+__version__ = "3.2.0"
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 import subprocess
 import os
@@ -23,29 +23,38 @@ from episeerr_utils import EPISEERR_DEFAULT_TAG_ID, EPISEERR_SELECT_TAG_ID, norm
 import pending_deletions
 from dashboard import dashboard_bp
 import media_processor
+from settings_db import (
+    save_service, get_service, delete_service,
+    update_service_test_result, get_all_services,
+    set_setting, get_setting
+)
 
 app = Flask(__name__)
-# Run initialization immediately on module load (Gunicorn workers)
-# Register dashboard blueprint
 app.register_blueprint(dashboard_bp)
+
 # Load environment variables
 load_dotenv()
 BASE_DIR = os.getcwd()
 
-# Sonarr variables
-SONARR_URL = normalize_url(os.getenv('SONARR_URL'))
-SONARR_API_KEY = os.getenv('SONARR_API_KEY')
+# Initialize settings database
+from settings_db import get_sonarr_config, init_settings_db
+init_settings_db()
 
-# Jellyseerr/Overseerr variables
+# Sonarr variables (with DB support)
+sonarr_config = get_sonarr_config()
+SONARR_URL = normalize_url(sonarr_config.get('url')) if sonarr_config else None
+SONARR_API_KEY = sonarr_config.get('api_key') if sonarr_config else None
+
+# Jellyseerr/Overseerr variables (keep as-is for now)
 JELLYSEERR_URL = normalize_url(os.getenv('JELLYSEERR_URL', ''))
 JELLYSEERR_API_KEY = os.getenv('JELLYSEERR_API_KEY')
 OVERSEERR_URL = normalize_url(os.getenv('OVERSEERR_URL'))
 OVERSEERR_API_KEY = os.getenv('OVERSEERR_API_KEY')
 SEERR_ENABLED = bool((JELLYSEERR_URL and JELLYSEERR_API_KEY) or (OVERSEERR_URL and OVERSEERR_API_KEY))
 
-
-# TMDB API Key
-TMDB_API_KEY = os.getenv('TMDB_API_KEY')
+# TMDB API Key - check database first
+tmdb_service = get_service('tmdb', 'default')
+TMDB_API_KEY = tmdb_service['api_key'] if tmdb_service else os.getenv('TMDB_API_KEY')
 app.config['TMDB_API_KEY'] = TMDB_API_KEY
 if app.config['TMDB_API_KEY']:
     app.logger.info("TMDB_API_KEY is set - request system will function normally")
@@ -88,6 +97,536 @@ stream_handler.setLevel(logging.DEBUG if os.getenv('FLASK_DEBUG', 'false').lower
 formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(message)s')
 stream_handler.setFormatter(formatter)
 app.logger.addHandler(stream_handler)
+
+def auto_add_quick_link(name, url, icon):
+    """Automatically add a service to quick links if it doesn't exist"""
+    from settings_db import get_all_quick_links, add_quick_link
+    
+    # Check if link already exists
+    existing_links = get_all_quick_links()
+    existing_names = [link['name'].lower() for link in existing_links]
+    
+    # Only add if not already present
+    if name.lower() not in existing_names:
+        add_quick_link(name, url, icon)
+        app.logger.info(f"Auto-added {name} to quick links")
+
+@app.before_request
+def check_first_run():
+    # Skip check for setup page itself, static files, and API routes
+    if request.endpoint in ['setup', 'static', 'test_connection', 'save_service_config', 
+                            'manage_quick_links', 'delete_quick_link_route', 'handle_emby_webhook']:
+        return
+    
+    # Check if Sonarr is configured (required service)
+    from settings_db import get_sonarr_config
+    sonarr = get_sonarr_config()
+    
+    if not sonarr or not sonarr.get('url'):
+        # Not configured - redirect to setup
+        return redirect(url_for('setup'))
+
+@app.route('/setup')
+def setup():
+    """Service setup page"""
+    # Get all service configurations
+    sonarr = get_service('sonarr', 'default')
+    jellyfin = get_service('jellyfin', 'default')
+    emby = get_service('emby', 'default')
+    tautulli = get_service('tautulli', 'default')
+    jellyseerr = get_service('jellyseerr', 'default')
+    tmdb = get_service('tmdb', 'default')
+    
+    # Check if setup is complete (Sonarr + at least one media server)
+    setup_complete = (sonarr and (jellyfin or emby or tautulli))
+    
+    # Quick links
+    from settings_db import get_all_quick_links
+    quick_links = get_all_quick_links()
+    
+    return render_template('setup.html',
+        setup_complete=setup_complete,
+        sonarr_connected=sonarr is not None,
+        sonarr_url=sonarr['url'] if sonarr else None,
+        sonarr_apikey=sonarr['api_key'] if sonarr else None,
+        jellyfin_connected=jellyfin is not None,
+        jellyfin_url=jellyfin['url'] if jellyfin else None,
+        jellyfin_apikey=jellyfin['api_key'] if jellyfin else None,
+        jellyfin_userid=jellyfin['config'].get('user_id') if jellyfin and jellyfin.get('config') else None,
+        jellyfin_trigger_min=jellyfin['config'].get('trigger_min', 50.0) if jellyfin and jellyfin.get('config') else 50.0,
+        jellyfin_trigger_max=jellyfin['config'].get('trigger_max', 55.0) if jellyfin and jellyfin.get('config') else 55.0,
+        jellyfin_poll_interval=jellyfin['config'].get('poll_interval', 900) if jellyfin and jellyfin.get('config') else 900,
+        emby_connected=emby is not None,
+        emby_url=emby['url'] if emby else None,
+        emby_apikey=emby['api_key'] if emby else None,
+        emby_userid=emby['config'].get('user_id') if emby and emby.get('config') else None,
+        emby_poll_interval=emby['config'].get('poll_interval', 5) if emby and emby.get('config') else 5,
+        emby_trigger_percent=emby['config'].get('trigger_percentage', 50.0) if emby and emby.get('config') else 50.0,
+        tautulli_connected=tautulli is not None,
+        tautulli_url=tautulli['url'] if tautulli else None,
+        tautulli_apikey=tautulli['api_key'] if tautulli else None,
+        jellyseerr_connected=jellyseerr is not None,
+        jellyseerr_url=jellyseerr['url'] if jellyseerr else None,
+        jellyseerr_apikey=jellyseerr['api_key'] if jellyseerr else None,
+        tmdb_connected=tmdb is not None,
+        tmdb_apikey=tmdb['api_key'] if tmdb else None
+    )
+
+@app.route('/api/test-connection/<service>', methods=['POST'])
+def test_connection(service):
+    """Test connection to a service"""
+    print(f"\n[TEST CONNECTION] Service: {service}")
+    print(f"[TEST CONNECTION] Content-Type: {request.headers.get('Content-Type')}")
+    print(f"[TEST CONNECTION] Raw data: {request.data}")
+    
+    data = request.json
+    print(f"[TEST CONNECTION] Parsed JSON: {data}")
+    
+    try:
+        if service == 'sonarr':
+            url = data.get('sonarr-url')
+            api_key = data.get('sonarr-apikey')
+            print(f"[TEST CONNECTION] Sonarr URL: {url}")
+            print(f"[TEST CONNECTION] API Key present: {bool(api_key)}")
+            
+            if not url or not api_key:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'URL and API key are required'
+                }), 400
+            
+            response = requests.get(f"{url}/api/v3/system/status", 
+                                  headers={'X-Api-Key': api_key}, timeout=10)
+            print(f"[TEST CONNECTION] Response status: {response.status_code}")
+            
+            if response.ok:
+                system_status = response.json()
+                update_service_test_result('sonarr', 'default', 'success')
+                return jsonify({
+                    'status': 'success',
+                    'message': f"Connected to Sonarr v{system_status.get('version', 'unknown')}"
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Sonarr returned status {response.status_code}: {response.text[:200]}'
+                }), 400
+        
+        elif service == 'jellyfin':
+            url = data.get('jellyfin-url')
+            api_key = data.get('jellyfin-apikey')
+            response = requests.get(f"{url}/System/Info", 
+                                  headers={'X-Emby-Token': api_key}, timeout=10)
+            if response.ok:
+                info = response.json()
+                update_service_test_result('jellyfin', 'default', 'success')
+                return jsonify({
+                    'status': 'success',
+                    'message': f"Connected to Jellyfin v{info.get('Version', 'unknown')}"
+                })
+        
+        elif service == 'emby':
+            url = data.get('emby-url')
+            api_key = data.get('emby-apikey')
+            response = requests.get(f"{url}/System/Info", 
+                                  headers={'X-Emby-Token': api_key}, timeout=10)
+            if response.ok:
+                info = response.json()
+                update_service_test_result('emby', 'default', 'success')
+                return jsonify({
+                    'status': 'success',
+                    'message': f"Connected to Emby v{info.get('Version', 'unknown')}"
+                })
+        
+        elif service == 'tautulli':
+            url = data.get('tautulli-url')
+            api_key = data.get('tautulli-apikey')
+            response = requests.get(f"{url}/api/v2", 
+                                  params={'apikey': api_key, 'cmd': 'get_server_info'}, timeout=10)
+            if response.ok:
+                result = response.json()
+                if result.get('response', {}).get('result') == 'success':
+                    update_service_test_result('tautulli', 'default', 'success')
+                    return jsonify({
+                        'status': 'success',
+                        'message': 'Connected to Tautulli successfully'
+                    })
+        
+        elif service == 'jellyseerr':
+            url = data.get('jellyseerr-url')
+            api_key = data.get('jellyseerr-apikey')
+            response = requests.get(f"{url}/api/v1/status", 
+                                  headers={'X-Api-Key': api_key}, timeout=10)
+            if response.ok:
+                update_service_test_result('jellyseerr', 'default', 'success')
+                return jsonify({
+                    'status': 'success',
+                    'message': 'Connected to Jellyseerr/Overseerr successfully'
+                })
+        
+        elif service == 'tmdb':
+            api_key = data.get('tmdb-apikey')
+            response = requests.get('https://api.themoviedb.org/3/configuration',
+                                  headers={'Authorization': f'Bearer {api_key}'}, timeout=10)
+            if response.ok:
+                update_service_test_result('tmdb', 'default', 'success')
+                return jsonify({
+                    'status': 'success',
+                    'message': 'TMDB API key is valid'
+                })
+        
+        update_service_test_result(service, 'default', 'failed')
+        return jsonify({
+            'status': 'error',
+            'message': f'Connection failed: {response.status_code}'
+        }), 400
+    
+    except requests.exceptions.Timeout:
+        print(f"[TEST CONNECTION] Timeout error")
+        update_service_test_result(service, 'default', 'failed')
+        return jsonify({
+            'status': 'error',
+            'message': 'Connection timeout - check URL and network'
+        }), 400
+    
+    except requests.exceptions.ConnectionError as e:
+        print(f"[TEST CONNECTION] Connection error: {e}")
+        update_service_test_result(service, 'default', 'failed')
+        return jsonify({
+            'status': 'error',
+            'message': f'Cannot reach server at {data.get(f"{service}-url", "URL")} - check URL and network'
+        }), 400
+    
+    except requests.exceptions.RequestException as e:
+        print(f"[TEST CONNECTION] Request error: {e}")
+        update_service_test_result(service, 'default', 'failed')
+        return jsonify({
+            'status': 'error',
+            'message': f'Request error: {str(e)}'
+        }), 400
+    
+    except Exception as e:
+        print(f"[TEST CONNECTION] Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        update_service_test_result(service, 'default', 'failed')
+        return jsonify({
+            'status': 'error',
+            'message': f'Error: {str(e)}'
+        }), 400
+
+@app.route('/api/save-service/<service>', methods=['POST'])
+def save_service_config(service):
+    """Save service configuration"""
+    data = request.json
+    
+    try:
+        if service == 'sonarr':
+            save_service('sonarr', 'default', 
+                        data.get('sonarr-url'),
+                        data.get('sonarr-apikey'))
+            # Auto-add to quick links
+            auto_add_quick_link('Sonarr', data.get('sonarr-url'), 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/sonarr.png')
+        
+        elif service == 'jellyfin':
+            config = {
+                'user_id': data.get('jellyfin-userid'),
+                'method': data.get('method', 'progress'),
+                'trigger_min': float(data.get('jellyfin-trigger-min', 50.0)),
+                'trigger_max': float(data.get('jellyfin-trigger-max', 55.0)),
+                'poll_interval': int(data.get('jellyfin-poll-interval', 900)),
+                'trigger_percentage': float(data.get('jellyfin-trigger-percent', 50.0))
+            }
+            save_service('jellyfin', 'default',
+                        data.get('jellyfin-url'),
+                        data.get('jellyfin-apikey'),
+                        config)
+            # Auto-add to quick links
+            auto_add_quick_link('Jellyfin', data.get('jellyfin-url'), 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/jellyfin.png')
+        
+        elif service == 'emby':
+            config = {
+                'user_id': data.get('emby-userid'),
+                'poll_interval': int(data.get('emby-poll-interval', 900)),
+                'trigger_percentage': float(data.get('emby-trigger-percent', 50.0))
+            }
+            save_service('emby', 'default',
+                        data.get('emby-url'),
+                        data.get('emby-apikey'),
+                        config)
+            # Auto-add to quick links
+            auto_add_quick_link('Emby', data.get('emby-url'), 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/emby.png')
+        
+        elif service == 'tautulli':
+            save_service('tautulli', 'default',
+                        data.get('tautulli-url'),
+                        data.get('tautulli-apikey'))
+            # Auto-add to quick links
+            auto_add_quick_link('Tautulli', data.get('tautulli-url'), 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/tautulli.png')
+        
+        elif service == 'jellyseerr':
+            save_service('jellyseerr', 'default',
+                        data.get('jellyseerr-url'),
+                        data.get('jellyseerr-apikey'))
+            # Auto-add to quick links
+            auto_add_quick_link('Jellyseerr', data.get('jellyseerr-url'), 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/jellyseerr.png')
+        
+        elif service == 'tmdb':
+            save_service('tmdb', 'default',
+                        'https://api.themoviedb.org',
+                        data.get('tmdb-apikey'))
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Settings saved successfully'
+        })
+    
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 400
+
+@app.route('/api/quick-links', methods=['GET', 'POST'])
+def manage_quick_links():
+    """Get or add quick links"""
+    from settings_db import get_all_quick_links, add_quick_link
+    
+    if request.method == 'GET':
+        links = get_all_quick_links()
+        return jsonify({'status': 'success', 'links': links})
+    
+    else:  # POST
+        data = request.json
+        link_id = add_quick_link(
+            data.get('name'),
+            data.get('url'),
+            data.get('icon', 'fas fa-link')
+        )
+        return jsonify({'status': 'success', 'id': link_id})
+
+@app.route('/api/quick-links/<int:link_id>', methods=['DELETE'])
+def delete_quick_link_route(link_id):
+    """Delete a quick link"""
+    from settings_db import delete_quick_link
+    delete_quick_link(link_id)
+    return jsonify({'status': 'success'})
+
+# ============================================================
+# EMBY WEBHOOK HANDLER
+# ============================================================
+# Emby field mapping (vs Jellyfin):
+#   Event                         → "playback.start / pause / stop"
+#   Item.Type                     → "Episode"
+#   Item.SeriesName               → series name
+#   Item.ParentIndexNumber        → season number
+#   Item.IndexNumber              → episode number
+#   Item.RunTimeTicks             → total runtime
+#   PlaybackInfo.PositionTicks    → current position
+#   Session.Id                    → session ID (NOT PlaySessionId!)
+#   User.Name                     → username
+#   Item.ProviderIds.sonarr       → Sonarr series ID (bonus - skips lookup)
+#
+# Emby setup:
+#   User Preferences → Notifications → Add Notification → Webhooks
+#   URL: http://<episeerr-host>:5002/emby-webhook
+#   Events: playback.start, playback.stop
+# ============================================================
+
+@app.route('/emby-webhook', methods=['POST'])
+def handle_emby_webhook():
+    """Handle Emby webhooks - maps Emby event structure to Episeerr's watched logic."""
+    app.logger.info("Received webhook from Emby")
+    data = request.json
+    if not data:
+        return jsonify({'status': 'error', 'message': 'No data received'}), 400
+
+    try:
+        # ── Extract Emby fields ──
+        event = data.get('Event', '')
+        item = data.get('Item', {})
+        user = data.get('User', {})
+        session = data.get('Session', {})
+        playback_info = data.get('PlaybackInfo', {})
+
+        item_type = item.get('Type')
+        series_name = item.get('SeriesName')
+        season_number = item.get('ParentIndexNumber')
+        episode_number = item.get('IndexNumber')
+        runtime_ticks = item.get('RunTimeTicks', 0)
+        position_ticks = playback_info.get('PositionTicks', 0)
+        session_id = session.get('Id', '')  # Use Session.Id - Emby API doesn't populate PlayState.PlaySessionId
+        user_name = user.get('Name', 'Unknown')
+
+        # Bonus: Emby includes Sonarr ID directly — skips name-based lookup
+        provider_ids = item.get('ProviderIds', {})
+        sonarr_id = provider_ids.get('sonarr')
+        tvdb_id = provider_ids.get('Tvdb')
+
+        app.logger.info(f"Emby event: {event} | Type: {item_type} | User: {user_name} | Session: {session_id}")
+
+        # Only process Episodes
+        if item_type != 'Episode':
+            app.logger.debug(f"Emby: skipping non-episode type '{item_type}'")
+            return jsonify({'status': 'success', 'message': 'Not an episode'}), 200
+
+        if not all([series_name, season_number is not None, episode_number is not None]):
+            app.logger.warning(f"Emby: missing fields - series={series_name}, season={season_number}, ep={episode_number}")
+            return jsonify({'status': 'error', 'message': 'Missing episode fields'}), 400
+
+        app.logger.info(f"📺 Emby: {series_name} S{season_number}E{episode_number} [{event}] (User: {user_name}, sonarr_id: {sonarr_id})")
+
+        # ============================================================
+        # playback.start — user check + start polling session
+        # ============================================================
+        if event == 'playback.start':
+            try:
+                from media_processor import start_emby_polling, check_emby_user
+
+                if not check_emby_user(user_name):
+                    app.logger.info(f"Emby: User '{user_name}' not configured, skipping")
+                    return jsonify({'status': 'success', 'message': 'User not configured'}), 200
+
+                app.logger.info(f"▶️  Emby started: {series_name} S{season_number}E{episode_number}")
+
+                episode_info = {
+                    'user_name': user_name,
+                    'series_name': series_name,
+                    'season_number': int(season_number),
+                    'episode_number': int(episode_number),
+                    'progress_percent': 0.0,
+                    'is_paused': False,
+                    'sonarr_id': sonarr_id,
+                    'tvdb_id': tvdb_id
+                }
+
+                polling_started = start_emby_polling(session_id, episode_info)
+                if polling_started:
+                    app.logger.info(f"✅ Emby: Started polling for {series_name} S{season_number}E{episode_number}")
+
+            except Exception as e:
+                app.logger.error(f"Emby: Error on playback.start: {e}")
+
+            return jsonify({'status': 'success', 'message': 'Playback started'}), 200
+
+        # ============================================================
+        # playback.pause — ignore (polling handles progress tracking)
+        # ============================================================
+        elif event == 'playback.pause':
+            app.logger.debug(f"⏸️  Emby paused: {series_name} S{season_number}E{episode_number}")
+            return jsonify({'status': 'success', 'message': 'Pause acknowledged'}), 200
+
+        # ============================================================
+        # playback.stop — final progress check + process if threshold met
+        # ============================================================
+        elif event == 'playback.stop':
+            progress_percent = (position_ticks / runtime_ticks * 100) if runtime_ticks > 0 else 0
+            app.logger.info(f"⏹️  Emby stopped: {series_name} S{season_number}E{episode_number} — {progress_percent:.1f}% watched")
+
+            # Stop polling for this session
+            try:
+                from media_processor import stop_emby_polling
+                stopped = stop_emby_polling(session_id)
+                if stopped:
+                    app.logger.info(f"🛑 Emby: Stopped polling for session {session_id}")
+            except Exception as e:
+                app.logger.debug(f"Emby: No polling to stop: {e}")
+
+            try:
+                from media_processor import (
+                    get_episode_tracking_key,
+                    processed_jellyfin_episodes,
+                    check_emby_user,
+                    EMBY_TRIGGER_PERCENTAGE
+                )
+
+                if not check_emby_user(user_name):
+                    app.logger.info(f"Emby: User '{user_name}' not configured, skipping")
+                    return jsonify({'status': 'success', 'message': 'User not configured'}), 200
+
+                # Already processed via polling? Skip.
+                tracking_key = get_episode_tracking_key(series_name, season_number, episode_number, user_name)
+                if tracking_key in processed_jellyfin_episodes:
+                    app.logger.info(f"✅ Emby: Already processed via polling — skipping")
+                    processed_jellyfin_episodes.discard(tracking_key)
+                    return jsonify({'status': 'success', 'message': 'Already processed'}), 200
+
+                # Check against EMBY_TRIGGER_PERCENTAGE
+                if progress_percent >= EMBY_TRIGGER_PERCENTAGE:
+                    app.logger.info(f"🎯 Emby: Processing at {progress_percent:.1f}% (threshold: {EMBY_TRIGGER_PERCENTAGE}%)")
+
+                    # ── Tag sync & drift correction ──
+                    from media_processor import get_series_id, move_series_in_config
+                    from episeerr_utils import validate_series_tag, sync_rule_tag_to_sonarr
+
+                    # Use Sonarr ID from Emby ProviderIds if available, else look up by name
+                    series_id = int(sonarr_id) if sonarr_id else get_series_id(series_name, tvdb_id)
+
+                    if series_id:
+                        config = load_config()
+                        config_rule = None
+                        series_id_str = str(series_id)
+
+                        for rule_name, rule_details in config['rules'].items():
+                            if series_id_str in rule_details.get('series', {}):
+                                config_rule = rule_name
+                                break
+
+                        if config_rule:
+                            matches, actual_tag_rule = validate_series_tag(series_id, config_rule)
+                            if not matches:
+                                if actual_tag_rule:
+                                    app.logger.warning(f"EMBY DRIFT - config: {config_rule} → tag: {actual_tag_rule}")
+                                    move_series_in_config(series_id, config_rule, actual_tag_rule)
+                                else:
+                                    app.logger.warning(f"Emby: No episeerr tag on {series_id} → restoring episeerr_{config_rule}")
+                                    sync_rule_tag_to_sonarr(series_id, config_rule)
+
+                    # ── Write temp file and run media_processor ──
+                    temp_dir = os.path.join(os.getcwd(), 'temp')
+                    os.makedirs(temp_dir, exist_ok=True)
+
+                    plex_data = {
+                        "server_title": series_name,
+                        "server_season_num": int(season_number),
+                        "server_ep_num": int(episode_number),
+                        "thetvdb_id": tvdb_id,
+                        "themoviedb_id": None,
+                        "sonarr_series_id": int(sonarr_id) if sonarr_id else series_id,
+                        "source": "emby"
+                    }
+
+                    temp_file_path = os.path.join(temp_dir, 'data_from_server.json')
+                    with open(temp_file_path, 'w') as f:
+                        json.dump(plex_data, f)
+
+                    result = subprocess.run(
+                        ["python3", os.path.join(os.getcwd(), "media_processor.py")],
+                        capture_output=True,
+                        text=True
+                    )
+
+                    if result.returncode != 0:
+                        app.logger.error(f"Emby: media_processor failed (rc={result.returncode}): {result.stderr}")
+                        return jsonify({'status': 'error', 'message': 'Processor failed'}), 500
+                    else:
+                        app.logger.info(f"✅ Emby: Processed {series_name} S{season_number}E{episode_number}")
+                else:
+                    app.logger.info(f"⏭️  Emby: {progress_percent:.1f}% watched (need {EMBY_TRIGGER_PERCENTAGE}%) — skipping")
+
+            except Exception as e:
+                app.logger.error(f"Emby: Error on playback.stop: {e}")
+                return jsonify({'status': 'error', 'message': str(e)}), 500
+
+            return jsonify({'status': 'success'}), 200
+
+        else:
+            app.logger.debug(f"Emby: Unhandled event '{event}'")
+            return jsonify({'status': 'success', 'message': f'Unhandled event: {event}'}), 200
+
+    except Exception as e:
+        app.logger.error(f"Emby webhook error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 # Configuration management
 config_path = os.path.join(app.root_path, 'config', 'config.json')
@@ -3559,8 +4098,8 @@ def handle_jellyfin_webhook():
             # Clean up progress tracking
             try:
                 from media_processor import cleanup_jellyfin_tracking
-                cleanup_jellyfin_tracking()
-                app.logger.debug("Cleaned up PlaybackProgress tracking")
+                # cleanup_jellyfin_tracking()  # DISABLED: Clears shared set used by Emby polling
+                app.logger.debug("Tracking cleanup skipped (shared with Emby)")
             except Exception as e:
                 app.logger.debug(f"No tracking to clean: {e}")
             

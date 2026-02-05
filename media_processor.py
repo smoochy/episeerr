@@ -17,17 +17,103 @@ from episeerr_utils import validate_series_tag, sync_rule_tag_to_sonarr
 # Load environment variables
 load_dotenv()
 
+# ============================================================
+# DATABASE SUPPORT - Get settings from DB first, fallback to .env
+# ============================================================
+from settings_db import get_sonarr_config, get_service
+
+def get_sonarr_settings():
+    config = get_sonarr_config()
+    if config:
+        return normalize_url(config.get('url')), config.get('api_key')
+    # Fallback to env
+    return normalize_url(os.getenv('SONARR_URL')), os.getenv('SONARR_API_KEY')
+
+def get_jellyfin_settings():
+    config = get_service('jellyfin', 'default')
+    if config:
+        return (normalize_url(config.get('url')), 
+                config.get('api_key'),
+                config.get('config', {}).get('user_id'))
+    # Fallback to env
+    return (normalize_url(os.getenv('JELLYFIN_URL')),
+            os.getenv('JELLYFIN_API_KEY'),
+            os.getenv('JELLYFIN_USER_ID'))
+
+def get_tautulli_settings():
+    config = get_service('tautulli', 'default')
+    if config:
+        return normalize_url(config.get('url')), config.get('api_key')
+    # Fallback to env
+    return normalize_url(os.getenv('TAUTULLI_URL')), os.getenv('TAUTULLI_API_KEY')
+
+def get_emby_settings():
+    config = get_service('emby', 'default')
+    if config:
+        return (normalize_url(config.get('url')), 
+                config.get('api_key'),
+                config.get('config', {}).get('user_id'))
+    # Fallback to env
+    return (normalize_url(os.getenv('EMBY_URL')),
+            os.getenv('EMBY_API_KEY'),
+            os.getenv('EMBY_USER_ID'))
+
 
 LAST_PROCESSED_JELLYFIN_EPISODES = {}
 LAST_PROCESSED_LOCK = threading.Lock()
 
-# User-configurable settings for active polling
-JELLYFIN_TRIGGER_PERCENTAGE = float(os.getenv('JELLYFIN_TRIGGER_PERCENTAGE', '50.0'))
-JELLYFIN_POLL_INTERVAL = int(os.getenv('JELLYFIN_POLL_INTERVAL', '900'))  # Default 15 minutes (900 seconds)
+# Load service configurations with database-first approach
+def load_jellyfin_config():
+    """Load Jellyfin config from database or env with defaults"""
+    from settings_db import get_jellyfin_config
+    config = get_jellyfin_config()
+    
+    if config:
+        return {
+            'trigger_percentage': config.get('trigger_min', 50.0),  # Use trigger_min as primary percentage
+            'poll_interval': config.get('poll_interval', 900),
+            'trigger_min': config.get('trigger_min', 50.0),
+            'trigger_max': config.get('trigger_max', 55.0)
+        }
+    
+    # Fallback to env
+    return {
+        'trigger_percentage': float(os.getenv('JELLYFIN_TRIGGER_PERCENTAGE', '50.0')),
+        'poll_interval': int(os.getenv('JELLYFIN_POLL_INTERVAL', '900')),
+        'trigger_min': float(os.getenv('JELLYFIN_TRIGGER_MIN', '50.0')),
+        'trigger_max': float(os.getenv('JELLYFIN_TRIGGER_MAX', '55.0'))
+    }
 
-# Jellyfin configuration
-JELLYFIN_TRIGGER_MIN = float(os.getenv('JELLYFIN_TRIGGER_MIN', '50.0'))
-JELLYFIN_TRIGGER_MAX = float(os.getenv('JELLYFIN_TRIGGER_MAX', '55.0'))
+def load_emby_config():
+    """Load Emby config from database or env with defaults"""
+    from settings_db import get_emby_config
+    config = get_emby_config()
+    
+    if config:
+        return {
+            'trigger_percentage': config.get('trigger_percentage', 50.0),
+            'poll_interval': config.get('poll_interval', 900)
+        }
+    
+    # Fallback to env (with Jellyfin fallback for backward compatibility)
+    return {
+        'trigger_percentage': float(os.getenv('EMBY_TRIGGER_PERCENTAGE', os.getenv('JELLYFIN_TRIGGER_PERCENTAGE', '50.0'))),
+        'poll_interval': int(os.getenv('EMBY_POLL_INTERVAL', os.getenv('JELLYFIN_POLL_INTERVAL', '900')))
+    }
+
+# Load configurations
+_jellyfin_config = load_jellyfin_config()
+_emby_config = load_emby_config()
+
+# User-configurable settings for active polling
+JELLYFIN_TRIGGER_PERCENTAGE = _jellyfin_config['trigger_percentage']
+JELLYFIN_POLL_INTERVAL = _jellyfin_config['poll_interval']
+JELLYFIN_TRIGGER_MIN = _jellyfin_config['trigger_min']
+JELLYFIN_TRIGGER_MAX = _jellyfin_config['trigger_max']
+
+# Emby configuration
+EMBY_TRIGGER_PERCENTAGE = _emby_config['trigger_percentage']
+EMBY_POLL_INTERVAL = _emby_config['poll_interval']
 
 # Track processed episodes to prevent duplicates
 processed_jellyfin_episodes = set()
@@ -99,9 +185,6 @@ missing_logger.addHandler(missing_handler)
 missing_logger.addHandler(console_handler)
 
 
-
-
-
 # Enhanced logging setup for cleanup operations
 def setup_cleanup_logging():
     """Setup cleanup logging to write to BOTH console AND files."""
@@ -149,9 +232,8 @@ def setup_cleanup_logging():
 # Initialize cleanup logger
 cleanup_logger = setup_cleanup_logging()
 
-# Define global variables based on environment settings
-SONARR_URL = normalize_url(os.getenv('SONARR_URL'))
-SONARR_API_KEY = os.getenv('SONARR_API_KEY')
+# Define global variables based on environment settings - DB FIRST!
+SONARR_URL, SONARR_API_KEY = get_sonarr_settings()
 
 # Initialize activity_storage with Sonarr config
 try:
@@ -163,6 +245,21 @@ except Exception as e:
 
 # Load settings from a JSON configuration file
 def load_config():
+    """Load configuration from JSON file."""
+    config_path = os.getenv('CONFIG_PATH', '/app/config/config.json')
+    
+    # REMOVED: Backup on every load (was causing spam)
+    with open(config_path, 'r') as file:
+        config = json.load(file)
+    
+    # Ensure required keys are present with default values
+    if 'rules' not in config:
+        config['rules'] = {}
+    
+    return config
+
+
+def save_config(config):
     """Load configuration from JSON file."""
     config_path = os.getenv('CONFIG_PATH', '/app/config/config.json')
     
@@ -427,10 +524,8 @@ def get_activity_date_with_hierarchy(series_id, series_title=None, return_comple
     # Step 2: Check external services (only if title available)
     if series_title:
         # Check which external service is configured (user typically has one, not both)
-        tautulli_url = normalize_url(os.getenv('TAUTULLI_URL'))
-        tautulli_api_key = os.getenv('TAUTULLI_API_KEY')
-        jellyfin_url = normalize_url(os.getenv('JELLYFIN_URL'))
-        jellyfin_api_key = os.getenv('JELLYFIN_API_KEY')
+        tautulli_url, tautulli_api_key = get_tautulli_settings()
+        jellyfin_url, jellyfin_api_key, _ = get_jellyfin_settings()
         
         # Prefer Tautulli if both are configured (since it's more accurate for watch tracking)
         if tautulli_url and tautulli_api_key:
@@ -491,11 +586,21 @@ def get_episode_tracking_key(series_name, season, episode, user_name):
 
 def check_jellyfin_user(username):
     """Check if this is the configured Jellyfin user"""
-    configured_user = os.getenv('JELLYFIN_USER_ID')
+    _, _, configured_user = get_jellyfin_settings()
     if not configured_user:
         logger.warning("JELLYFIN_USER_ID not set - processing all users")
         return True
     return username.lower() == configured_user.lower()
+
+def check_emby_user(username):
+    """Check if this is the configured Emby user.
+    Reads EMBY_USER_ID; falls back to JELLYFIN_USER_ID if not set."""
+    _, _, configured_user = get_emby_settings()
+    if not configured_user:
+        logger.warning("EMBY_USER_ID not set - processing all users")
+        return True
+    return username.lower() == configured_user.lower()
+
 def get_server_activity():
     """Read current viewing details from server webhook stored data."""
     try:
@@ -852,8 +957,7 @@ def get_tautulli_last_watched(series_title, return_complete=False):
                         If False, returns just timestamp (existing behavior)
     """
     try:
-        tautulli_url = normalize_url(os.getenv('TAUTULLI_URL'))
-        tautulli_api_key = os.getenv('TAUTULLI_API_KEY')
+        tautulli_url, tautulli_api_key = get_tautulli_settings()
         
         if not tautulli_url or not tautulli_api_key:
             logger.warning(f"Tautulli not configured")
@@ -1038,9 +1142,7 @@ def get_jellyfin_last_watched(series_title, return_complete=False):
                         If False, returns just timestamp (existing behavior)
     """
     try:
-        jellyfin_url = os.getenv('JELLYFIN_URL')
-        jellyfin_api_key = os.getenv('JELLYFIN_API_KEY')
-        jellyfin_user_input = os.getenv('JELLYFIN_USER_ID')  # Could be username or GUID
+        jellyfin_url, jellyfin_api_key, jellyfin_user_input = get_jellyfin_settings()
         
         if not all([jellyfin_url, jellyfin_api_key, jellyfin_user_input]):
             logger.warning("Jellyfin not configured")
@@ -2497,8 +2599,7 @@ def run_unified_cleanup():
 def get_jellyfin_session_by_id(session_id):
     """Get a specific Jellyfin session by ID."""
     try:
-        jellyfin_url = os.getenv('JELLYFIN_URL')
-        jellyfin_api_key = os.getenv('JELLYFIN_API_KEY')
+        jellyfin_url, jellyfin_api_key, _ = get_jellyfin_settings()
         
         if not jellyfin_url or not jellyfin_api_key:
             logger.warning("Jellyfin not configured")
@@ -2727,6 +2828,435 @@ def get_jellyfin_polling_status():
             'poll_interval': JELLYFIN_POLL_INTERVAL
         }
 
+# ============================================================
+# EMBY SESSION POLLING
+# ============================================================
+# Mirrors the Jellyfin polling system but queries Emby's /Sessions API.
+# Emby's session response has the same shape as Jellyfin's:
+#   NowPlayingItem.SeriesName, ParentIndexNumber, IndexNumber, RunTimeTicks
+#   PlayState.PositionTicks, IsPaused
+# ============================================================
+
+# Separate tracking dicts for Emby so Jellyfin and Emby polls don't collide
+active_emby_polling_sessions = {}
+emby_polling_threads = {}
+
+def get_emby_session_by_id(session_id):
+    """
+    Get an active Emby session by Session.Id.
+    
+    NOTE: Emby's webhook includes PlaySessionId, but the /Sessions API response 
+    does NOT populate PlayState.PlaySessionId. We must match on Session.Id instead.
+    """
+    import requests
+    import os
+    from dotenv import load_dotenv
+    
+    load_dotenv()
+    
+    # Use database-first approach
+    emby_url, emby_api_key, _ = get_emby_settings()
+    
+    print(f"get_emby_session_by_id CALLED for {session_id}")
+    print(f"EMBY_URL={emby_url}")
+    print(f"EMBY_API_KEY={'SET' if emby_api_key else 'NOT SET'}")
+    
+    try:
+        url = f"{emby_url}/Sessions"
+        headers = {'X-Emby-Token': emby_api_key}
+        
+        print(f"About to GET {url}")
+        response = requests.get(url, headers=headers, timeout=10)
+        print(f"Response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            print(f"ERROR: API returned {response.status_code}")
+            return None
+        
+        sessions = response.json()
+        print(f"Found {len(sessions)} sessions")
+        print(f"Looking for Session.Id={session_id}")
+        
+        # Match on Session.Id (PlayState.PlaySessionId is not populated by Emby API)
+        for i, session in enumerate(sessions):
+            session_id_api = session.get('Id', 'N/A')
+            device_id = session.get('DeviceId', 'N/A')
+            
+            # Check if this session has active playback
+            now_playing = session.get('NowPlayingItem')
+            
+            if now_playing:
+                media_type = now_playing.get('Type', 'None')
+                print(f"Session {i}: Id={session_id_api}, DeviceId={device_id}, NowPlaying={media_type}")
+                
+                # Match on Session.Id
+                if session_id_api == session_id:
+                    print(f"✅ MATCH FOUND on Session.Id!")
+                    return session
+            else:
+                print(f"Session {i}: Id={session_id_api}, DeviceId={device_id}, NowPlayingItem=None")
+        
+        print("No match found, returning None")
+        return None
+        
+    except requests.RequestException as e:
+        print(f"REQUEST ERROR: {e}")
+        return None
+    except Exception as e:
+        print(f"UNEXPECTED ERROR: {e}")
+        return None
+
+def extract_episode_info_from_emby_session(session):
+    """Extract episode info from an Emby session. Same structure as Jellyfin."""
+    try:
+        now_playing = session.get('NowPlayingItem', {})
+        play_state = session.get('PlayState', {})
+
+        if now_playing.get('Type') != 'Episode':
+            return None
+
+        position_ticks = play_state.get('PositionTicks', 0)
+        total_ticks = now_playing.get('RunTimeTicks', 0)
+        progress_percent = (position_ticks / total_ticks * 100) if total_ticks > 0 else 0
+
+        return {
+            'session_id': session.get('Id'),
+            'user_name': session.get('UserName', 'Unknown'),
+            'series_name': now_playing.get('SeriesName'),
+            'season_number': now_playing.get('ParentIndexNumber'),
+            'episode_number': now_playing.get('IndexNumber'),
+            'episode_title': now_playing.get('Name', 'Unknown Episode'),
+            'progress_percent': progress_percent,
+            'is_paused': play_state.get('IsPaused', False),
+            'sonarr_id': now_playing.get('ProviderIds', {}).get('sonarr')
+        }
+
+    except Exception as e:
+        logger.error(f"Error extracting Emby episode info: {str(e)}")
+        return None
+
+def poll_emby_session(session_id, initial_episode_info):
+    """Poll an Emby session until trigger percentage hit or session ends."""
+    # CRITICAL DEBUG: Write to file
+    try:
+        with open('/app/logs/emby_debug.txt', 'a') as f:
+            import datetime
+            f.write(f"{datetime.datetime.now()} - poll_emby_session THREAD STARTED - Session: {session_id}\n")
+            f.flush()
+    except:
+        pass
+    
+    logger.info(f"[EMBY POLL DEBUG] Thread started for session {session_id}")
+    logger.info(f"🔄 Starting Emby polling for session {session_id}")
+    logger.info(f"   📺 {initial_episode_info['series_name']} S{initial_episode_info['season_number']}E{initial_episode_info['episode_number']}")
+    logger.info(f"   🎯 Will trigger at {EMBY_TRIGGER_PERCENTAGE}%")
+
+    try:
+        with open('/app/logs/emby_debug.txt', 'a') as f:
+            import datetime
+            f.write(f"{datetime.datetime.now()} - About to enter try block\n")
+            f.flush()
+    except:
+        pass
+
+    try:
+        processed = False
+        poll_count = 0
+        
+        try:
+            with open('/app/logs/emby_debug.txt', 'a') as f:
+                import datetime
+                f.write(f"{datetime.datetime.now()} - About to sleep 5 seconds\n")
+                f.flush()
+        except:
+            pass
+        
+        # Give Emby a moment to register the session before first poll
+        logger.info(f"[EMBY POLL] Waiting 5 seconds before first poll...")
+        time.sleep(5)
+        
+        try:
+            with open('/app/logs/emby_debug.txt', 'a') as f:
+                import datetime
+                f.write(f"{datetime.datetime.now()} - After sleep, about to enter while loop\n")
+                f.write(f"{datetime.datetime.now()} - EMBY_POLL_INTERVAL={EMBY_POLL_INTERVAL}\n")
+                f.flush()
+        except:
+            pass
+        
+        logger.info(f"[EMBY POLL] Entering while loop for session {session_id}")
+        logger.info(f"[EMBY POLL] session_id in active_emby_polling_sessions: {session_id in active_emby_polling_sessions}")
+        logger.info(f"[EMBY POLL] EMBY_POLL_INTERVAL: {EMBY_POLL_INTERVAL}")
+        
+        try:
+            with open('/app/logs/emby_debug.txt', 'a') as f:
+                import datetime
+                f.write(f"{datetime.datetime.now()} - Checking while condition\n")
+                f.write(f"{datetime.datetime.now()} - session_id={session_id}\n")
+                f.write(f"{datetime.datetime.now()} - active_emby_polling_sessions keys: {list(active_emby_polling_sessions.keys())}\n")
+                f.write(f"{datetime.datetime.now()} - session in dict: {session_id in active_emby_polling_sessions}\n")
+                f.write(f"{datetime.datetime.now()} - processed={processed}\n")
+                f.write(f"{datetime.datetime.now()} - While condition would be: {session_id in active_emby_polling_sessions and not processed}\n")
+                f.flush()
+        except Exception as ex:
+            with open('/app/logs/emby_debug.txt', 'a') as f:
+                import datetime
+                f.write(f"{datetime.datetime.now()} - Error writing debug: {ex}\n")
+                f.flush()
+
+        while session_id in active_emby_polling_sessions and not processed:
+            try:
+                with open('/app/logs/emby_debug.txt', 'a') as f:
+                    import datetime
+                    f.write(f"{datetime.datetime.now()} - INSIDE while loop iteration - poll_count={poll_count}\n")
+                    f.flush()
+            except:
+                pass
+            
+            poll_count += 1
+            logger.info(f"[EMBY POLL] Loop iteration #{poll_count}")
+            
+            try:
+                with open('/app/logs/emby_debug.txt', 'a') as f:
+                    import datetime
+                    f.write(f"{datetime.datetime.now()} - About to call get_emby_session_by_id\n")
+                    f.flush()
+            except:
+                pass
+
+            current_session = get_emby_session_by_id(session_id)
+            
+            try:
+                with open('/app/logs/emby_debug.txt', 'a') as f:
+                    import datetime
+                    f.write(f"{datetime.datetime.now()} - get_emby_session_by_id returned: {current_session is not None}\n")
+                    f.flush()
+            except:
+                pass
+            
+            logger.info(f"[EMBY POLL] get_emby_session_by_id returned: {current_session is not None}")
+
+            if not current_session:
+                if poll_count <= 3:
+                    # Session might not be registered yet on first few polls - retry
+                    logger.info(f"📺 Emby session {session_id} not found yet (poll #{poll_count}) - will retry")
+                    logger.info(f"[EMBY POLL] Session not found (early poll) - retrying")
+                    time.sleep(EMBY_POLL_INTERVAL)
+                    continue
+                else:
+                    logger.info(f"📺 Emby session {session_id} ended - stopping polling (poll #{poll_count})")
+                    logger.info(f"[EMBY POLL] Session not found after {poll_count} polls - breaking")
+                    break
+
+            current_episode_info = extract_episode_info_from_emby_session(current_session)
+            
+            try:
+                with open('/app/logs/emby_debug.txt', 'a') as f:
+                    import datetime
+                    f.write(f"{datetime.datetime.now()} - extract returned: {current_episode_info is not None}\n")
+                    if current_episode_info:
+                        f.write(f"{datetime.datetime.now()} - Progress: {current_episode_info.get('progress_percent')}%\n")
+                    f.flush()
+            except:
+                pass
+
+            if not current_episode_info:
+                logger.info(f"⏭️ Emby session {session_id} no longer playing episode - stopping polling")
+                try:
+                    with open('/app/logs/emby_debug.txt', 'a') as f:
+                        import datetime
+                        f.write(f"{datetime.datetime.now()} - extract returned None, breaking\n")
+                        f.flush()
+                except:
+                    pass
+                break
+
+            # Episode changed (autoplay kicked in) — stop polling this one
+            if (current_episode_info['series_name'] != initial_episode_info['series_name'] or
+                current_episode_info['season_number'] != initial_episode_info['season_number'] or
+                current_episode_info['episode_number'] != initial_episode_info['episode_number']):
+                logger.info(f"📺 Emby: Episode changed in session {session_id} - processing original if threshold met")
+                # Don't just break — the original episode was watched enough if we got here
+                # but we don't have its final position. Safe to just stop; the new episode's
+                # playback.start will start its own polling.
+                break
+
+            current_progress = current_episode_info['progress_percent']
+            is_paused = current_episode_info['is_paused']
+
+            logger.info(f"📊 Emby poll #{poll_count}: {current_progress:.1f}% {'(PAUSED)' if is_paused else ''}")
+
+            if should_trigger_processing(current_progress, EMBY_TRIGGER_PERCENTAGE):
+                logger.info(f"🎯 Emby trigger threshold reached at {current_progress:.1f}%!")
+                
+                try:
+                    with open('/app/logs/emby_debug.txt', 'a') as f:
+                        import datetime
+                        f.write(f"{datetime.datetime.now()} - Trigger threshold reached! Processing...\n")
+                        f.flush()
+                except:
+                    pass
+
+                # Reuse process_jellyfin_episode — it just writes temp file + runs media_processor
+                success = process_jellyfin_episode(current_episode_info)
+                
+                try:
+                    with open('/app/logs/emby_debug.txt', 'a') as f:
+                        import datetime
+                        f.write(f"{datetime.datetime.now()} - process_jellyfin_episode returned: {success}\n")
+                        f.flush()
+                except:
+                    pass
+                
+                if success:
+                    processed = True
+                    
+                    try:
+                        with open('/app/logs/emby_debug.txt', 'a') as f:
+                            import datetime
+                            f.write(f"{datetime.datetime.now()} - processed=True, loop will exit\n")
+                            f.flush()
+                    except:
+                        pass
+                    
+                    # Mark so playback.stop doesn't double-process
+                    tracking_key = get_episode_tracking_key(
+                        current_episode_info['series_name'],
+                        current_episode_info['season_number'],
+                        current_episode_info['episode_number'],
+                        current_episode_info['user_name']
+                    )
+                    processed_jellyfin_episodes.add(tracking_key)
+                    logger.info(f"✅ Emby: Processed {current_episode_info['series_name']} S{current_episode_info['season_number']}E{current_episode_info['episode_number']}")
+                else:
+                    logger.warning(f"⚠️ Emby: Processing failed - will retry next poll")
+
+            if not processed:
+                time.sleep(EMBY_POLL_INTERVAL)
+
+    except Exception as e:
+        logger.error(f"❌ Error in Emby polling thread for session {session_id}: {str(e)}")
+        try:
+            with open('/app/logs/emby_debug.txt', 'a') as f:
+                import datetime, traceback
+                f.write(f"{datetime.datetime.now()} - EXCEPTION in polling thread: {str(e)}\n")
+                f.write(f"{traceback.format_exc()}\n")
+                f.flush()
+        except:
+            pass
+
+    finally:
+        try:
+            with open('/app/logs/emby_debug.txt', 'a') as f:
+                import datetime
+                f.write(f"{datetime.datetime.now()} - FINALLY block - cleaning up session {session_id}\n")
+                f.flush()
+        except:
+            pass
+        
+        with polling_lock:
+            if session_id in active_emby_polling_sessions:
+                del active_emby_polling_sessions[session_id]
+            if session_id in emby_polling_threads:
+                del emby_polling_threads[session_id]
+        logger.info(f"🧹 Cleaned up Emby polling for session {session_id}")
+
+def start_emby_polling(session_id, episode_info):
+    """Start polling an Emby session. Called from episeerr.py on playback.start."""
+    # CRITICAL DEBUG: Write to file to bypass logging
+    try:
+        with open('/app/logs/emby_debug.txt', 'a') as f:
+            import datetime
+            f.write(f"{datetime.datetime.now()} - start_emby_polling CALLED - Session: {session_id}\n")
+            f.flush()
+    except:
+        pass
+    
+    # CRITICAL DEBUG: This should ALWAYS appear if the function is called
+    import logging
+    root_logger = logging.getLogger()
+    root_logger.info(f"!!! EMBY POLLING FUNCTION CALLED - Session: {session_id} !!!")
+    
+    logger.info(f"[EMBY DEBUG] start_emby_polling called for session {session_id}")
+    
+    # Check if this episode was already processed via polling
+    tracking_key = get_episode_tracking_key(
+        episode_info['series_name'],
+        episode_info['season_number'],
+        episode_info['episode_number'],
+        episode_info['user_name']
+    )
+    
+    if tracking_key in processed_jellyfin_episodes:
+        logger.info(f"⏭️ Emby: {episode_info['series_name']} S{episode_info['season_number']}E{episode_info['episode_number']} already processed - skipping polling")
+        try:
+            with open('/app/logs/emby_debug.txt', 'a') as f:
+                import datetime
+                f.write(f"{datetime.datetime.now()} - Episode already processed, skipping\n")
+                f.flush()
+        except:
+            pass
+        return False
+    
+    with polling_lock:
+        if session_id in active_emby_polling_sessions:
+            logger.info(f"⏭️ Already polling Emby session {session_id} - skipping")
+            logger.info(f"[EMBY DEBUG] Already polling - skipping")
+            return False
+
+        active_emby_polling_sessions[session_id] = episode_info
+        
+        try:
+            with open('/app/logs/emby_debug.txt', 'a') as f:
+                import datetime
+                f.write(f"{datetime.datetime.now()} - Added session to active dict\n")
+                f.write(f"{datetime.datetime.now()} - session_id={session_id}\n")
+                f.write(f"{datetime.datetime.now()} - active_emby_polling_sessions keys: {list(active_emby_polling_sessions.keys())}\n")
+                f.flush()
+        except:
+            pass
+
+        logger.info(f"🎬 Starting Emby polling: {episode_info['series_name']} S{episode_info['season_number']}E{episode_info['episode_number']}")
+        logger.info(f"   👤 User: {episode_info['user_name']}")
+        logger.info(f"   🔄 Session ID: {session_id}")
+        logger.info(f"[EMBY DEBUG] About to spawn thread for {session_id}")
+
+        thread = threading.Thread(
+            target=poll_emby_session,
+            args=(session_id, episode_info),
+            daemon=True,
+            name=f"EmbyPoll-{session_id[:8]}"
+        )
+        thread.start()
+        emby_polling_threads[session_id] = thread
+        logger.info(f"[EMBY DEBUG] Thread started: {thread.name}, alive={thread.is_alive()}")
+
+        return True
+
+def stop_emby_polling(session_id):
+    """Stop polling an Emby session. Called from episeerr.py on playback.stop."""
+    try:
+        with open('/app/logs/emby_debug.txt', 'a') as f:
+            import datetime
+            f.write(f"{datetime.datetime.now()} - stop_emby_polling CALLED - Session: {session_id}\n")
+            f.flush()
+    except:
+        pass
+    
+    with polling_lock:
+        if session_id in active_emby_polling_sessions:
+            logger.info(f"🛑 Stopping Emby polling for session {session_id}")
+            try:
+                with open('/app/logs/emby_debug.txt', 'a') as f:
+                    import datetime
+                    f.write(f"{datetime.datetime.now()} - REMOVING session from active dict: {session_id}\n")
+                    f.flush()
+            except:
+                pass
+            del active_emby_polling_sessions[session_id]
+            return True
+        return False
+
 # Add this function to handle webhook start events
 def handle_jellyfin_playback_start(webhook_data):
     """Handle Jellyfin playback start webhook and initiate polling."""
@@ -2765,8 +3295,7 @@ def handle_jellyfin_playback_start(webhook_data):
 def get_jellyfin_active_episodes():
     """Get all currently active episodes from Jellyfin sessions."""
     try:
-        jellyfin_url = os.getenv('JELLYFIN_URL')
-        jellyfin_api_key = os.getenv('JELLYFIN_API_KEY')
+        jellyfin_url, jellyfin_api_key, _ = get_jellyfin_settings()
         
         if not jellyfin_url or not jellyfin_api_key:
             logger.debug("Jellyfin not configured")
@@ -2989,16 +3518,16 @@ def start_jellyfin_active_polling():
     global jellyfin_polling_thread, jellyfin_polling_running
     
     # Check if Jellyfin is configured
-    jellyfin_url = os.getenv('JELLYFIN_URL')
-    jellyfin_api_key = os.getenv('JELLYFIN_API_KEY')
+    jellyfin_url, jellyfin_api_key, _ = get_jellyfin_settings()
     
     if not jellyfin_url or not jellyfin_api_key:
         logger.info("⏭️  Jellyfin not configured - active polling disabled")
         return False
     
-    # Auto-detect which Jellyfin mode is configured
-    using_trigger_window = os.getenv('JELLYFIN_TRIGGER_MIN') and os.getenv('JELLYFIN_TRIGGER_MAX')
-    using_poll_interval = os.getenv('JELLYFIN_POLL_INTERVAL')
+    # Auto-detect which Jellyfin mode is configured from database/env
+    jellyfin_config = load_jellyfin_config()
+    using_trigger_window = jellyfin_config['trigger_min'] and jellyfin_config['trigger_max']
+    using_poll_interval = jellyfin_config['poll_interval']
     
     # Option 1: Real-time with PlaybackProgress webhooks
     # Has TRIGGER_MIN/MAX but NO POLL_INTERVAL

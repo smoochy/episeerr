@@ -2,6 +2,7 @@
 import os
 import json
 import time
+from datetime import datetime
 import requests
 import logging
 import threading
@@ -12,22 +13,64 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# ============================================================
+# DATABASE SUPPORT - Get settings from DB first, fallback to .env
+# ============================================================
+from settings_db import get_sonarr_config, get_service
 
+def normalize_url(url):
+    """Remove leading/trailing whitespaces and trailing / from URLs"""
+    if url is None:
+        return None
+    normalized_url = url.strip().rstrip('/')
+    return normalized_url
+
+def get_sonarr_settings():
+    config = get_sonarr_config()
+    if config:
+        return normalize_url(config.get('url')), config.get('api_key')
+    # Fallback to env
+    return normalize_url(os.getenv('SONARR_URL')), os.getenv('SONARR_API_KEY')
+
+def get_jellyfin_settings():
+    config = get_service('jellyfin', 'default')
+    if config:
+        return (normalize_url(config.get('url')), 
+                config.get('api_key'),
+                config.get('config', {}).get('user_id'))
+    # Fallback to env
+    return (normalize_url(os.getenv('JELLYFIN_URL')),
+            os.getenv('JELLYFIN_API_KEY'),
+            os.getenv('JELLYFIN_USER_ID'))
+
+def get_tautulli_settings():
+    config = get_service('tautulli', 'default')
+    if config:
+        return normalize_url(config.get('url')), config.get('api_key')
+    # Fallback to env
+    return normalize_url(os.getenv('TAUTULLI_URL')), os.getenv('TAUTULLI_API_KEY')
+
+def get_emby_settings():
+    config = get_service('emby', 'default')
+    if config:
+        return (normalize_url(config.get('url')), 
+                config.get('api_key'),
+                config.get('config', {}).get('user_id'))
+    # Fallback to env
+    return (normalize_url(os.getenv('EMBY_URL')),
+            os.getenv('EMBY_API_KEY'),
+            os.getenv('EMBY_USER_ID'))
 
 # In modified_episeerr.py
 REQUESTS_DIR = os.path.join(os.getcwd(), 'requests')
 # Create logs directory in the current working directory
 log_dir = os.path.join(os.getcwd(), 'logs')
 os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, 'episeerr.log')
-
-# Create logger
+log_file = os.path.join(log_dir, 'episeerr.log')# Create logger
 logger = logging.getLogger("episeerr")
 logger.setLevel(logging.DEBUG)
-
 # Clear any existing handlers
 logger.handlers.clear()
-
 # Create rotating file handler
 file_handler = RotatingFileHandler(
     log_file, 
@@ -38,35 +81,25 @@ file_handler = RotatingFileHandler(
 file_handler.setLevel(logging.DEBUG)
 file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(file_formatter)
-
 # Create console handler
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.DEBUG)
 console_handler.setFormatter(file_formatter)
-
 # Add handlers to logger
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
-# Remove leading and trailing whitespaces and trailing / from .env URLs if present
-# Otherwise URLs will look like url:port//series/name-of-series
-def normalize_url(url):
-    if url is None:
-        return None
-    normalized_url = url.strip().rstrip('/')
-    return normalized_url
 
-# Sonarr connection details
-SONARR_URL = normalize_url(os.getenv('SONARR_URL', 'http://sonarr:8989'))
-SONARR_API_KEY = os.getenv('SONARR_API_KEY')
+# Sonarr connection details - DB first, fallback to .env
+SONARR_URL, SONARR_API_KEY = get_sonarr_settings()
 
 # episeerr_utils.py
 EPISEERR_DEFAULT_TAG_ID = None
 EPISEERR_SELECT_TAG_ID = None
+
 # Directory to store pending requests
 REQUESTS_DIR = os.path.join(os.getcwd(), 'data', 'requests')
 os.makedirs(REQUESTS_DIR, exist_ok=True)
-
 # Store pending episode selections
 # Format: {series_id: {'title': 'Series Title', 'season': 1, 'episodes': [1, 2, 3, ...]}}
 pending_selections = {}

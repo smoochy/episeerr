@@ -3,16 +3,54 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 import logging
-
 from episeerr_utils import normalize_url
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Configuration settings from environment variables
-SONARR_URL = normalize_url(os.getenv('SONARR_URL'))
-SONARR_API_KEY = os.getenv('SONARR_API_KEY')
+# ============================================================
+# DATABASE SUPPORT - Get settings from DB first, fallback to .env
+# ============================================================
+from settings_db import get_sonarr_config, get_service
 
+def get_sonarr_settings():
+    config = get_sonarr_config()
+    if config:
+        return normalize_url(config.get('url')), config.get('api_key')
+    # Fallback to env
+    return normalize_url(os.getenv('SONARR_URL')), os.getenv('SONARR_API_KEY')
+
+def get_jellyfin_settings():
+    config = get_service('jellyfin', 'default')
+    if config:
+        return (normalize_url(config.get('url')), 
+                config.get('api_key'),
+                config.get('config', {}).get('user_id'))
+    # Fallback to env
+    return (normalize_url(os.getenv('JELLYFIN_URL')),
+            os.getenv('JELLYFIN_API_KEY'),
+            os.getenv('JELLYFIN_USER_ID'))
+
+def get_tautulli_settings():
+    config = get_service('tautulli', 'default')
+    if config:
+        return normalize_url(config.get('url')), config.get('api_key')
+    # Fallback to env
+    return normalize_url(os.getenv('TAUTULLI_URL')), os.getenv('TAUTULLI_API_KEY')
+
+def get_emby_settings():
+    config = get_service('emby', 'default')
+    if config:
+        return (normalize_url(config.get('url')), 
+                config.get('api_key'),
+                config.get('config', {}).get('user_id'))
+    # Fallback to env
+    return (normalize_url(os.getenv('EMBY_URL')),
+            os.getenv('EMBY_API_KEY'),
+            os.getenv('EMBY_USER_ID'))
+
+# Configuration settings - DB first, fallback to .env
+SONARR_URL, SONARR_API_KEY = get_sonarr_settings()
 MAX_SHOWS_ITEMS = int(os.getenv('MAX_SHOWS_ITEMS', 24))
 
 # Setup logging
