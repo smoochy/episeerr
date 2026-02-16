@@ -8,7 +8,34 @@
 
 ---
 
-## [Released]
+## [Released] v3.3.3 - 2025-02-15
+
+### 🎯 Improvements
+- **Jellyfin Detection Method Overhaul**: Changed default from PlaybackProgress (webhook spam) to Webhook-Triggered Polling for better performance
+  - Added dual detection mode UI with clear explanations
+  - Polling mode: webhook fires on playback start, then polls only that session every 15 min
+  - Progress mode: real-time webhook spam (advanced users only)
+  - Added webhook setup instructions for both modes
+- **Emby Polling Improvements**: Increased default poll interval from 5 seconds to 900 seconds (15 min) to prevent server overload
+  - Added minimum enforcement: 300 seconds (5 min)
+  - Updated UI descriptions to clarify webhook-triggered polling workflow
+- **Database Optimization**: Form handler now only saves method-specific fields instead of all fields regardless of mode
+- **Three Processing Paths**: Polling catches threshold during checks, PlaybackStop acts as safety net for edge cases, session end handles natural cleanup
+
+### 🔧 Technical Changes
+- Updated `save_service_config()` to read `jellyfin-method` field and save conditionally based on selected mode
+- Enhanced `get_jellyfin_config()` and `get_emby_config()` to handle field name variations for backward compatibility
+- Added JavaScript toggle for Jellyfin detection method settings visibility
+- Setup route now passes `jellyfin_method` variable to template for proper form state restoration
+v3.3.2 - 2025-02-15
+### 🎯 Improvements
+- Implemented centralized logging configuration with `LOG_LEVEL` environment variable support
+- Added log rotation (10MB max file size, 5 backups)
+- Reduced log spam by 90% - eliminated "No items in queue" messages that ran every 30 seconds
+- LOG_LEVEL=INFO (default): Only logs actual events
+- LOG_LEVEL=DEBUG: Full diagnostics available when troubleshooting
+- Expected log volume reduction: 77,480 lines → ~7,500 lines over 3 weeks
+
 v3.3.1 - 2025-02-06
 cosmetic fixes
 removed duplicate recently downloaded on dashboard

@@ -1,4 +1,4 @@
-__version__ = "3.3.1"
+__version__ = "3.3.3"
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 import subprocess
 import os
@@ -21,6 +21,7 @@ import requests
 import episeerr_utils
 from episeerr_utils import EPISEERR_DEFAULT_TAG_ID, EPISEERR_SELECT_TAG_ID, normalize_url
 import pending_deletions
+from logging_config import main_logger as logger
 from dashboard import dashboard_bp
 import media_processor
 from settings_db import (
@@ -73,32 +74,6 @@ os.makedirs(os.path.dirname(LAST_PROCESSED_FILE), exist_ok=True)
 LAST_PROCESSED_JELLYFIN_EPISODES = {}
 LAST_PROCESSED_LOCK = Lock()
 
-# Setup logging
-log_file = os.getenv('LOG_PATH', os.path.join(os.getcwd(), 'logs', 'app.log'))
-log_level = logging.INFO
-os.makedirs(os.path.dirname(log_file), exist_ok=True)
-
-file_handler = RotatingFileHandler(
-    log_file,
-    maxBytes=1*1024*1024,
-    backupCount=2,
-    encoding='utf-8'
-)
-file_handler.setLevel(log_level)
-file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(file_formatter)
-
-logging.basicConfig(
-    level=log_level,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[file_handler]
-)
-
-stream_handler = logging.StreamHandler()
-stream_handler.setLevel(logging.DEBUG if os.getenv('FLASK_DEBUG', 'false').lower() == 'true' else logging.INFO)
-formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(message)s')
-stream_handler.setFormatter(formatter)
-app.logger.addHandler(stream_handler)
 
 def reload_module_configs():
     """Reload configuration in all modules after saving to database"""
@@ -187,14 +162,16 @@ def setup():
         jellyfin_url=jellyfin['url'] if jellyfin else None,
         jellyfin_apikey=jellyfin['api_key'] if jellyfin else None,
         jellyfin_userid=jellyfin['config'].get('user_id') if jellyfin and jellyfin.get('config') else None,
+        jellyfin_method=jellyfin['config'].get('method', 'polling') if jellyfin and jellyfin.get('config') else 'polling',
         jellyfin_trigger_min=jellyfin['config'].get('trigger_min', 50.0) if jellyfin and jellyfin.get('config') else 50.0,
         jellyfin_trigger_max=jellyfin['config'].get('trigger_max', 55.0) if jellyfin and jellyfin.get('config') else 55.0,
         jellyfin_poll_interval=jellyfin['config'].get('poll_interval', 900) if jellyfin and jellyfin.get('config') else 900,
+        jellyfin_trigger_percent=jellyfin['config'].get('trigger_percentage', 50.0) if jellyfin and jellyfin.get('config') else 50.0,
         emby_connected=emby is not None,
         emby_url=emby['url'] if emby else None,
         emby_apikey=emby['api_key'] if emby else None,
         emby_userid=emby['config'].get('user_id') if emby and emby.get('config') else None,
-        emby_poll_interval=emby['config'].get('poll_interval', 5) if emby and emby.get('config') else 5,
+        emby_poll_interval=emby['config'].get('poll_interval', 900) if emby and emby.get('config') else 900,
         emby_trigger_percent=emby['config'].get('trigger_percentage', 50.0) if emby and emby.get('config') else 50.0,
         tautulli_connected=tautulli is not None,
         tautulli_url=tautulli['url'] if tautulli else None,
@@ -420,14 +397,28 @@ def save_service_config(service):
             })
         
         elif service == 'jellyfin':
+            method = data.get('jellyfin-method', 'polling')  # Default to polling mode
+            
+            # Base config fields common to both methods
             config = {
                 'user_id': data.get('jellyfin-userid'),
-                'method': data.get('method', 'progress'),
-                'trigger_min': float(data.get('jellyfin-trigger-min', 50.0)),
-                'trigger_max': float(data.get('jellyfin-trigger-max', 55.0)),
-                'poll_interval': int(data.get('jellyfin-poll-interval', 900)),
-                'trigger_percentage': float(data.get('jellyfin-trigger-percent', 50.0))
+                'method': method
             }
+            
+            # Add method-specific fields
+            if method == 'polling':
+                # Webhook-triggered polling mode
+                config.update({
+                    'poll_interval': int(data.get('jellyfin-poll-interval', 900)),
+                    'trigger_percentage': float(data.get('jellyfin-trigger-percent', 50.0))
+                })
+            else:  # method == 'progress'
+                # Real-time PlaybackProgress mode
+                config.update({
+                    'trigger_min': float(data.get('jellyfin-trigger-min', 50.0)),
+                    'trigger_max': float(data.get('jellyfin-trigger-max', 55.0))
+                })
+            
             save_service('jellyfin', 'default',
                         data.get('jellyfin-url'),
                         data.get('jellyfin-apikey'),
