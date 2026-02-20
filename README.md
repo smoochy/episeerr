@@ -11,7 +11,8 @@ This project started as scratching my own itch - I wanted more granular series m
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-orange)](https://buymeacoffee.com/vansmak)
 
 ---
-
+newest features will be the dev branch and can be pulled as :custom tag.  Includes the ability to make new season and episode requests straight from episeerr for existing shows. 
+also for plex users can see your watchlist and auto sync it
 ## 📋 Table of Contents
 
 - [What It Does](#what-it-does)
