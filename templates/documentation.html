@@ -362,7 +362,7 @@
             </div>
 
             <h5 class="mt-4"><i class="fas fa-bolt text-info me-2"></i>Step 4: Set Up Webhooks</h5>
-            <p>Configure webhooks for automation (see <a href="#integration">Integration</a> section below for details):</p>
+            <p>Configure webhooks for automation (see <a href="#webhooks">Webhook Setup</a> section below for details):</p>
             <ul>
                 <li><strong>Sonarr webhook:</strong> ✅ REQUIRED - <code>http://your-server:5002/sonarr-webhook</code></li>
                 <li><strong>Jellyseerr/Overseerr:</strong> ✅ REQUIRED if using *seerr</li>
@@ -1208,7 +1208,7 @@
         </div>
     </div>
     <!-- Integration -->
-    <div class="card mb-3" id="integration">
+    <div class="card mb-3" id="webhooks">
         <div class="card-header bg-secondary text-white">
             <h4 class="mb-0"><i class="fas fa-plug me-2"></i>Webhook Integration</h4>
         </div>
@@ -1240,20 +1240,19 @@
             </div>
 
             <div class="col-md-4">
-                <h6><i class="fas fa-film text-success me-2"></i>Jellyfin (3 Modes)</h6>
-                <p class="small mb-1"><strong>Mode 1:</strong> PlaybackProgress (real-time)</p>
-                <p class="small mb-1"><strong>Mode 2:</strong> Session Start/Stop (polling)</p>
-                <p class="small mb-2"><strong>Mode 3:</strong> Playback Stop (on-stop)</p>
+                <h6><i class="fas fa-film text-success me-2"></i>Jellyfin</h6>
+                <p class="small mb-1"><strong>Method 1:</strong> Webhook-Triggered Polling <span class="badge bg-success" style="font-size:0.65em">Recommended</span></p>
+                <p class="small mb-2"><strong>Method 2:</strong> PlaybackProgress <small class="text-muted">(Advanced)</small></p>
                 <pre class="bg-dark text-light p-2"><code>Webhook URL:
             http://your-server:5002/api/integration/jellyfin/webhook
 
-            Trigger: (depends on mode)
-            See full guide below</code></pre>
-                <p class="small mb-0">
-                    <a href="https://github.com/Vansmak/episeerr/blob/main/docs/configuration/webhook-setup.md" target="_blank" class="text-decoration-none">
-                        📖 Full Jellyfin Setup Guide →
-                    </a>
-                </p>
+            Notification Types:
+            Polling: Playback Start + Stop
+            Progress: Playback Progress
+
+            Required Header:
+            Content-Type: application/json</code></pre>
+                <p class="small text-muted mb-0">Set detection method in Integrations → Jellyfin</p>
             </div>
 
             <div class="col-md-4">

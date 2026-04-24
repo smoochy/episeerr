@@ -1,5 +1,40 @@
 # Changelog
 
+## v3.6.9
+
+### 🐛 Bug Fixes
+
+- Fixed cleanup job returning 401 from Sonarr `/api/v3/episodefile` for every series — `get_sonarr_latest_file_date()` was sending `X-Api` instead of `X-Api-Key` in the request header, so Sonarr never received the API key. All other Sonarr calls used the correct header name; only this function was affected. (`media_processor.py`)
+- Fixed series lookup missing localized/alternate titles — `get_series_id()` now checks each series' `alternateTitles` array from Sonarr as a fallback when the primary title match fails. Titles are normalized (lowercase, punctuation stripped, whitespace collapsed) before comparison, so names like "Es - Welcome to Derry" correctly match Sonarr's "Es Welcome To Derry" alternate title. (`media_processor.py`)
+
+---
+
+## v3.6.8
+
+### ✨ Playback start activation for `+` modifier
+
+When any integration receives a **playback start** event for the activation episode of a series in held state (i.e. using the `+` modifier), the hold is released and the rule executes immediately — without waiting for the watch-completion threshold to be met.
+
+- **Plex**: fires on `media.play` for all detection methods (polling, scrobble, stop+threshold). Marks the episode as processed so later threshold/scrobble events don't double-fire.
+- **Jellyfin**: fires on `SessionStart` / `PlaybackStart` for all detection methods (polling and progress). Marks the tracking key so the stop handler and polling thread don't double-fire.
+- **Emby**: fires on `playback.start` / `SessionStart`. Same tracking-key dedup as Jellyfin.
+- **Tautulli**: fires on `Playback Start` notification type. Requires `"notification_type": "{notification_type}"` in the JSON template and a separate "Playback Start" notification agent (see setup below). Existing "Watched" webhook behaviour is completely unchanged.
+
+All other series and rules are entirely unaffected — the check is a no-op for anything not in held state with a `+` modifier.
+
+**New shared function:** `is_held_activation_episode(series_name, season, episode)` in `media_processor.py` — single source of truth for the held-activation check across all integrations.
+
+---
+
+## v3.6.7
+
+### 🐛 Bug Fixes
+
+- Fixed Approve All / Reject All buttons misalignment in Pending Deletions accordion headers — buttons are now outside the `accordion-button` element to avoid Bootstrap flexbox/chevron conflicts
+- Jellyfin documentation fixes
+
+---
+
 ## v3.6.6
 
 ### ✨ Release keep on season finale

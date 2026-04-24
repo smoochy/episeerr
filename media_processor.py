@@ -568,12 +568,27 @@ def get_series_id(series_name, thetvdb_id=None, themoviedb_id=None):
         
         
         
-        # 5. Log close matches for debugging
+        # 5. Alternate title match (covers localized titles, e.g. Plex "Es - Welcome to Derry")
+        def _norm(s):
+            s = s.lower()
+            s = re.sub(r'[^\w\s]', '', s)
+            s = re.sub(r'\s+', ' ', s).strip()
+            return s
+
+        incoming_norm = _norm(series_name)
+        for series in series_list:
+            for alt in series.get('alternateTitles', []):
+                alt_title = alt.get('title', '')
+                if _norm(alt_title) == incoming_norm:
+                    logger.info(f"Found alternate title match: '{alt_title}' in series '{series['title']}'")
+                    return series['id']
+
+        # 6. Log close matches for debugging
         close_matches = []
         for series in series_list:
             if series_name.lower() in series['title'].lower():
                 close_matches.append(series['title'])
-        
+
         if close_matches:
             missing_logger.info(f"Series not found in Sonarr: '{series_name}'. Possible matches: {close_matches}")
         else:
@@ -936,7 +951,7 @@ def get_tautulli_last_watched(series_title, return_complete=False):
 def get_sonarr_latest_file_date(series_id):
     """Get the most recent episode file date from Sonarr - FIXED VERSION."""
     try:
-        headers = {'X-Api': SONARR_API_KEY}
+        headers = {'X-Api-Key': SONARR_API_KEY}
         logger.info(f"Getting episode file dates for series {series_id}")
         
         # Use the correct endpoint for episode files
@@ -1705,6 +1720,39 @@ def _find_rule_name_for_series(series_id, config):
         if sid in rule_data.get('series', {}):
             return rule_name
     return None
+
+
+def is_held_activation_episode(series_name, season_number, episode_number):
+    """
+    Return (True, series_id) if this episode is the activation ep for a held+plus
+    series/season, (False, None) otherwise.
+    Called by integrations on playback start to fire rule execution immediately
+    without waiting for the watch-completion threshold.
+    """
+    from episeerr import load_config
+    series_id = get_series_id(series_name)
+    if not series_id:
+        return False, None
+    config = load_config()
+    rule_name = _find_rule_name_for_series(series_id, config)
+    if not rule_name:
+        return False, None
+    rule = config['rules'][rule_name]
+    always_have = rule.get('always_have', '')
+    if not always_have:
+        return False, None
+    parsed_ah = parse_always_have(always_have)
+    if not parsed_ah or not parsed_ah['has_plus']:
+        return False, None
+    sid = str(series_id)
+    series_data = rule.get('series', {}).get(sid, {})
+    act_seasons = series_data.get('activation_seasons', {})
+    if act_seasons.get(str(season_number)) != 'held':
+        return False, None
+    activation_ep = parsed_ah['activation_ep']
+    if activation_ep is None or int(episode_number) != int(activation_ep):
+        return False, None
+    return True, series_id
 
 
 def is_protected_by_expression(season_num, episode_num, expression, total_seasons=None):
