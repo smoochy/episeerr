@@ -24,6 +24,9 @@ jobs:
       - name: Sync upstream via pull request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # In a fork checkout, gh defaults to the parent repo (Vansmak) as
+          # PR base; pin it to this repo.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
