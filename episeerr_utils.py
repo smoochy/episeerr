@@ -19,16 +19,42 @@ load_dotenv()
 # Retries on connection errors and 5xx responses (backoff: 1s, 2s, 4s).
 # POST/DELETE are only retried on connection-level failures (not on bad status
 # codes) to avoid double-writes; GET/PUT retry on status codes too.
+#
+# connect=1 caps connection-level retries (unreachable host, refused, DNS
+# failure) independently of total: a host that's actually unreachable won't
+# start responding on attempt 3 just because it didn't on attempt 1, so
+# retrying it 3x like a transient 5xx just stacks timeouts - measured 46s
+# worst case (4 attempts x 10s + backoff) with connect uncapped, which blows
+# past gunicorn's 30s worker timeout and gets the worker SIGKILLed instead of
+# ever raising a catchable exception. connect=1 bounds that to ~21s.
 _retry = Retry(
     total=3,
+    connect=1,
     backoff_factor=1,          # sleeps: 1s, 2s, 4s
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["GET", "PUT"],   # status-code retries only for idempotent methods
     raise_on_status=False,
 )
+
+# Many call sites across the codebase (get_sonarr_series, etc.) don't pass an
+# explicit timeout=. Without one, a *arr host that's unreachable at the network
+# level (not just refusing connections) hangs on the OS TCP connect timeout
+# (100s+) instead of failing fast - long enough for gunicorn's 30s worker
+# timeout to SIGKILL the worker mid-request rather than the call ever raising
+# a catchable exception. Default every request through this session to 10s
+# (matching the timeout the explicit call sites already use) unless the caller
+# overrides it.
+class TimeoutHTTPAdapter(HTTPAdapter):
+    DEFAULT_TIMEOUT = 10
+
+    def send(self, request, **kwargs):
+        if kwargs.get('timeout') is None:
+            kwargs['timeout'] = self.DEFAULT_TIMEOUT
+        return super().send(request, **kwargs)
+
 http = requests.Session()
-http.mount("http://",  HTTPAdapter(max_retries=_retry))
-http.mount("https://", HTTPAdapter(max_retries=_retry))
+http.mount("http://",  TimeoutHTTPAdapter(max_retries=_retry))
+http.mount("https://", TimeoutHTTPAdapter(max_retries=_retry))
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ============================================================
@@ -380,78 +406,80 @@ def get_episeerr_delay_profile_id():
 
 def update_delay_profile_with_control_tags():
     """
-    Update delay profile to ONLY include the three control tags:
-    - episeerr_default
-    - episeerr_select  
+    Update delay profile to ONLY include the transient control tags:
+    - episeerr_select
     - episeerr_delay
-    
-    Rule tags (episeerr_one_at_a_time, episeerr_get1keepseason, etc.) are 
-    NOT included to allow immediate downloads after processing.
-    
+
+    episeerr_default is deliberately NOT bound here: it's the shipped
+    "default" rule's own tag, same as episeerr_one_at_a_time or any other
+    rule tag - not a transient workflow marker. Binding it to the delay
+    profile would permanently block Sonarr's automatic RSS grabs for every
+    series left on the default rule, well past initial processing.
+
+    Rule tags (episeerr_default, episeerr_one_at_a_time, episeerr_get1keepseason,
+    etc.) are NOT included to allow immediate downloads after processing.
+
     Returns:
         bool: True if successful, False otherwise
     """
     logger.info("=== Updating delay profile with control tags only ===")
-    
+
     try:
         profile_id = get_episeerr_delay_profile_id()
         if not profile_id:
             logger.warning("No custom delay profile found - skipping sync")
             return False
-        
+
         headers = get_sonarr_headers()
-        
+
         # Get current profile
         get_resp = http.get(f"{SONARR_URL}/api/v3/delayprofile/{profile_id}", headers=headers)
         if not get_resp.ok:
             logger.error(f"Failed to get delay profile: {get_resp.status_code}")
             return False
-        
+
         profile = get_resp.json()
-        
-        # Build set of ONLY the three control tags
+
+        # Build set of ONLY the transient control tags
         control_tags = set()
-        
-        # 1. episeerr_default
-        default_id = create_episeerr_default_tag()
-        if default_id:
-            control_tags.add(default_id)
-            logger.debug(f"Added episeerr_default (ID: {default_id})")
-        else:
-            logger.warning("Could not create/find episeerr_default tag")
-        
-        # 2. episeerr_select
+
+        # Ensure episeerr_default exists and stays populated (used elsewhere,
+        # e.g. check_and_cancel_unmonitored_downloads) but is NOT bound to the
+        # delay profile - it's a real rule tag, not a workflow marker.
+        create_episeerr_default_tag()
+
+        # 1. episeerr_select
         select_id = create_episeerr_select_tag()
         if select_id:
             control_tags.add(select_id)
             logger.debug(f"Added episeerr_select (ID: {select_id})")
         else:
             logger.warning("Could not create/find episeerr_select tag")
-        
-        # 3. episeerr_delay (NEW)
+
+        # 2. episeerr_delay
         delay_id = get_or_create_rule_tag_id('delay')
         if delay_id:
             control_tags.add(delay_id)
             logger.debug(f"Added episeerr_delay (ID: {delay_id})")
         else:
             logger.warning("Could not create/find episeerr_delay tag")
-        
-        # Update profile with ONLY these three tags
+
+        # Update profile with ONLY these control tags
         profile['tags'] = list(control_tags)
         put_resp = http.put(
             f"{SONARR_URL}/api/v3/delayprofile/{profile_id}",
             headers=headers,
             json=profile
         )
-        
+
         if put_resp.ok:
-            logger.info(f"✓ Updated delay profile with {len(control_tags)} control tags (default, select, delay)")
+            logger.info(f"✓ Updated delay profile with {len(control_tags)} control tags (select, delay)")
             logger.info(f"  Control tag IDs: {sorted(control_tags)}")
             return True
         else:
             logger.error(f"Failed to update delay profile: {put_resp.text}")
             return False
-            
+
     except Exception as e:
         logger.error(f"Delay profile control tag update failed: {str(e)}")
         return False
@@ -577,7 +605,8 @@ def sync_rule_tag_to_sonarr(series_id, new_rule_name):
             # Keep if:
             # - Not an episeerr_ tag (user tags like 1080p, anime, etc.)
             # - OR is episeerr_select (needs special handling in webhook, removed separately)
-            # Remove: episeerr_default (workflow complete), episeerr_<old_rulename> (old assignment)
+            # Remove: episeerr_<old_rulename> (old assignment, including episeerr_default
+            # if this series is moving off the default rule)
             if not tag_name.startswith('episeerr_') or tag_name == 'episeerr_select':
                 updated_tags.append(tag_id)
             else:
@@ -664,8 +693,9 @@ def validate_series_tag(series_id, expected_rule, series_data=None):
             tag_name = tag_mapping.get(tag_id, '')
             if tag_name.startswith('episeerr_'):
                 rule_name = tag_name.replace('episeerr_', '')
-                # Skip special workflow tags
-                if rule_name not in ['select', 'default']:
+                # Skip select - transient workflow marker, not a rule tag.
+                # 'default' IS a real rule tag (the shipped default rule).
+                if rule_name != 'select':
                     episeerr_tags.append(rule_name)
         
         # No rule tags found
@@ -761,7 +791,7 @@ def reconcile_series_drift(series_id, config, series_data=None):
             if not tag_name.startswith('episeerr_'):
                 continue
             rule_name = tag_name.replace('episeerr_', '')
-            if rule_name in ('default', 'select'):
+            if rule_name == 'select':
                 continue
             actual_rule = next(
                 (rn for rn in config['rules'] if rn.lower() == rule_name), None

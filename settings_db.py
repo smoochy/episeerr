@@ -366,21 +366,72 @@ def set_setting(key: str, value: Any, category: str = 'general', description: st
     conn.commit()
     conn.close()
 
+def is_service_disabled(service_type: str, name: str = 'default') -> bool:
+    """True if a services row exists for this service and is explicitly disabled.
+
+    Distinct from "no row at all" (never configured), which should still
+    fall back to env vars below. This means the operator turned it off via
+    the Setup page toggle, and env vars should NOT override that.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT enabled FROM services WHERE service_type = ? AND name = ?',
+        (service_type, name)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None and not row[0]
+
+
 # Configuration getters with env fallback
 def get_sonarr_config() -> Dict[str, str]:
     """Get Sonarr config from DB or env"""
     service = get_service('sonarr', 'default')
     if service:
+        cfg = service.get('config') or {}
         return {
             'url': service['url'],
-            'api_key': service['api_key']
+            'api_key': service['api_key'],
+            'default_quality_profile_id': cfg.get('default_quality_profile_id'),
         }
-    
-    # Fallback to env
+    if is_service_disabled('sonarr'):
+        return {'url': None, 'api_key': None, 'default_quality_profile_id': None}
     return {
         'url': os.getenv('SONARR_URL'),
-        'api_key': os.getenv('SONARR_API_KEY')
+        'api_key': os.getenv('SONARR_API_KEY'),
+        'default_quality_profile_id': os.getenv('SONARR_QUALITY_PROFILE_ID'),
     }
+
+
+def get_preferred_quality_profile(service_type: str, profiles: list) -> int:
+    """Return the preferred quality profile ID from service config.
+
+    Reads default_quality_profile_id from the service's DB config.  Falls back
+    to the first profile in the list if none is set or the stored ID is no
+    longer valid, logging a warning so the operator knows to configure it.
+    """
+    import logging as _lg
+    _log = _lg.getLogger(__name__)
+    if not profiles:
+        return 1
+    pref_id = None
+    try:
+        svc = get_service(service_type, 'default')
+        pref_raw = ((svc.get('config') or {}).get('default_quality_profile_id')) if svc else None
+        if pref_raw:
+            pref_id = int(pref_raw)
+    except Exception:
+        pass
+    if pref_id and any(p['id'] == pref_id for p in profiles):
+        return pref_id
+    _log.warning(
+        f"[{service_type}] %s; using first available: %s (id=%s)",
+        "preferred quality profile not found in current list" if pref_id
+        else "no preferred quality profile configured",
+        profiles[0].get('name', '?'), profiles[0]['id']
+    )
+    return profiles[0]['id']
 
 def get_radarr_config() -> Optional[Dict[str, Any]]:
     """Get Radarr config from DB or env"""
@@ -393,6 +444,8 @@ def get_radarr_config() -> Optional[Dict[str, Any]]:
             'default_root_folder': cfg.get('default_root_folder'),
             'default_quality_profile_id': cfg.get('default_quality_profile_id'),
         }
+    if is_service_disabled('radarr'):
+        return None
     if os.getenv('RADARR_URL'):
         return {
             'url': os.getenv('RADARR_URL'),
@@ -431,7 +484,10 @@ def get_jellyfin_config() -> Optional[Dict[str, Any]]:
             })
         
         return base
-    
+
+    if is_service_disabled('jellyfin'):
+        return None
+
     # Fallback to env
     if os.getenv('JELLYFIN_URL'):
         method = 'progress' if os.getenv('JELLYFIN_TRIGGER_MIN') else 'polling'
@@ -468,6 +524,8 @@ def get_plex_config() -> Optional[Dict[str, Any]]:
             'progress_threshold': float(cfg.get('progress_threshold', 50.0)),
             'polling_interval':   int(cfg.get('polling_interval', 15)),
         }
+    if is_service_disabled('plex'):
+        return None
     # Fallback to env
     if os.getenv('PLEX_URL'):
         return {
@@ -490,6 +548,8 @@ def get_tautulli_config() -> Optional[Dict[str, Any]]:
             'api_key':       service['api_key'],
             'override_plex': bool(cfg.get('override_plex', False)),
         }
+    if is_service_disabled('tautulli'):
+        return None
     # Fallback to env
     if os.getenv('TAUTULLI_URL'):
         return {
@@ -511,7 +571,10 @@ def get_emby_config() -> Optional[Dict[str, Any]]:
             'poll_interval': service['config'].get('poll_interval', 900),
             'trigger_percentage': service['config'].get('trigger_percentage', 50.0)
         }
-    
+
+    if is_service_disabled('emby'):
+        return None
+
     # Fallback to env
     if os.getenv('EMBY_URL'):
         return {

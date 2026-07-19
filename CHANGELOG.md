@@ -1,5 +1,54 @@
 # Changelog
 
+## v3.7.14
+
+### 🐛 Bug Fixes
+
+- **Config changes (Sonarr URL/key, service toggles) only ever took effect for about half of requests, randomly, until a full restart** — the container ran 2 gunicorn worker processes, each with its own Python memory. `reload_module_configs()` (used by Save and by the service toggle) only reloads modules in whichever single worker handled that request; the other worker kept serving stale `SONARR_URL`/`SONARR_API_KEY` until it happened to reload independently, which without a second config change never happens. Since gunicorn round-robins requests across workers, this looked like intermittent failures (e.g. the Xadarr library browser's Sonarr-backed Shows tab going empty while Movies kept working) that a full restart always "fixed" by resetting both workers to the same state. Fixed: switched from 2 sync workers to 1 worker with 8 threads (`gthread`), so there's only one process/memory space — no more divergence — while still handling concurrent requests (including long-lived SSE streams) without blocking. (`Dockerfile`)
+
+---
+
+## v3.7.13
+
+### 🐛 Bug Fixes
+
+- **Service enable/disable toggles on the Setup page silently did nothing for most services** — `POST /api/toggle-service/<service>` ran a bare `UPDATE` that assumed a `services` row already existed. Anyone who configured a service (Sonarr, Radarr, Jellyfin, Plex, Tautulli, Emby) via env vars instead of saving it through the Setup UI had no row for the toggle to update, so it 404'd and the checkbox silently snapped back — looking exactly like the toggle didn't work. Fixed: the toggle now seeds a row from that service's existing env-var config when none exists yet. (`episeerr.py`, #82)
+- **Disabling a service didn't actually stop it from running if env vars were also set** — `get_service()` returns `None` both when a row doesn't exist *and* when a row exists but is disabled, and every `get_<service>_config()` helper treated `None` as "fall back to env vars" either way. So toggling a service off only changed the Setup page's badge; anything reading its config directly (webhooks, dashboard, movie/media processors) kept using the env-var config regardless. Fixed: added `is_service_disabled()` and each getter now checks it before falling back to env vars, so an explicit disable is actually honored. (`settings_db.py`)
+- **Sonarr toggle didn't take effect until clicking Save** — `SONARR_URL`/`SONARR_API_KEY` are loaded once into module-level globals at startup and were only refreshed by the existing Save flow's `reload_module_configs()` call. Toggling updated the DB but not the live in-memory connection. Fixed: the toggle route now calls `reload_module_configs()` too. (`episeerr.py`, #82)
+- **Re-enabling a service left its badge stuck on "Disabled"** — `toggleServiceEnabled()` only had a code path to set the "Disabled" badge, none to restore it on re-enable. Fixed: a successful enable now reloads the page, which recomputes the real Connected/Not Connected/Disabled state server-side. (`templates/setup.html`)
+
+---
+
+## v3.7.12
+
+### 🐛 Bug Fixes
+
+- **Dry-run queueing for Keep Rule and Grace/Dormant cleanup silently dropped every episode** — after v3.7.10 taught `delete_episodes_immediately()` and `delete_episodes_in_sonarr_with_logging()` to check dry-run before deleting, both functions tried to resolve the episode info needed to queue an approval by looking up `episodeIds` on Sonarr's `episodefile/{id}` endpoint, which isn't reliably populated. Every episode was logged as "cannot resolve episode info — skipping" and never reached the pending-approval queue, so dry run stopped deletions but left nothing to review or approve. Fixed: both functions now take the episode data their callers already have on hand (from the same `/api/v3/episode?seriesId=` fetch that decided what to delete) instead of re-deriving it from Sonarr. (`media_processor.py`, #35)
+
+---
+
+## v3.7.10
+
+### ✨ Configurable Quality Profiles
+
+Sonarr and Radarr now have a **Preferred Quality Profile** dropdown in setup, replacing the old "enter the numeric ID" text field for Radarr and adding the option for Sonarr entirely.
+
+- Setup page auto-populates the dropdown from the live Sonarr/Radarr API; no need to look up profile IDs
+- Selected profile is used by all automatic adds: Trakt sync, Plex watchlist sync, Discover adds, and manual series prep
+- Falls back to the first available profile if none is saved, with a log warning
+
+### 🎨 Black & Gold Theme
+
+New `data-theme="black-gold"` — pure black background with rich gold accents. Available in the sidebar theme switcher. Gold frame touches on cards, nav bar, modals, and sidebar border.
+
+### 🐛 Bug Fixes
+
+- **Trakt watchlist "Added" badge never progressed to "Available"** — items added to Sonarr/Radarr by Trakt sync were permanently stored as `added_to_sonarr`/`added_to_radarr` in the sync file, and `get_watchlist_with_status` used that stored status without ever rechecking. Fixed: when the stored status is `added_to_radarr`, a live Radarr check verifies `hasFile`; for `added_to_sonarr`, checks `episodeFileCount > 0`. Badge automatically promotes to "Available" on the next dashboard load after the file lands. (`integrations/trakt.py`)
+- **Keep Rule real-time deletions ignored both global and rule-level dry-run** — `delete_episodes_immediately()`, used by the webhook-triggered "episodes leaving keep block" and season-finale cleanup paths, deleted episode files straight from Sonarr with no dry-run check at all (unlike the scheduled Grace/Dormant cleanup path, which already checked both flags). Enabling dry run no longer stopped these deletions when triggered by a watch webhook. Fixed: it now checks global `dry_run_mode` and the rule's `dry_run` flag and queues the deletion for approval instead of deleting live, matching the scheduled cleanup path. (`media_processor.py`)
+- **Caught-up airing shows never received newly aired episodes** — `episeerr_default` was bound as one of the three "control tags" on the Sonarr delay profile alongside the genuinely transient `episeerr_select`/`episeerr_delay`, but it's actually the shipped `default` rule's own permanent tag, same as `episeerr_one_at_a_time` or any custom rule tag. Any series left on the `default` rule therefore had its automatic/RSS grabs held forever instead of just during initial processing: once a user caught up on an airing show, no watch event ever fired again to trigger Episeerr's own search, so newly aired episodes silently never downloaded. A coupled bug in `validate_series_tag()`/`reconcile_series_drift()` also misread a correctly-tagged `episeerr_default` series as having no tag at all, causing a redundant tag-restore loop on every reconciliation pass. Fixed: `default` is no longer special-cased and now behaves like every other rule (temporary hold only during initial select/processing, normal RSS afterward). Self-heals existing installs on next restart. (`episeerr_utils.py`)
+
+---
+
 ## v3.7.7
 
 ### ✨ Trakt Integration
