@@ -1,5 +1,29 @@
 # Changelog
 
+## v3.7.17
+
+### 🐛 Bug Fixes
+
+- **Approving a queued deletion hung the request forever — browser eventually threw "NetworkError when attempting to fetch resource," and the whole service went unresponsive until restarted** — regression from v3.7.15's fix. `approve_deletions()` holds `pending_lock` (a plain, non-reentrant `Lock`) for its whole body, and while still holding it, called `delete_episodes_immediately(..., rule_dry_run=False)` to force a real delete. But that function's dry-run check is `global_dry_run or rule_dry_run` — forcing only the rule-level flag doesn't help when `dry_run_mode` is on globally (the default for new installs), so it still routed into the queueing branch, which calls back into `add_to_pending_deletions()` — which itself takes `pending_lock`. Re-acquiring a lock the same thread already holds blocks forever, and once enough threads pile up waiting on it (1 worker/8 threads since v3.7.14), the whole app stops responding. Fixed: `delete_episodes_immediately()` now takes a `force=True` param that bypasses both global and rule dry-run outright, which `approve_deletions()` now passes; `approve_deletions()` also no longer holds `pending_lock` across the delete call, so this class of deadlock can't happen via any future path either. (`media_processor.py`, `pending_deletions.py`, #35)
+
+---
+
+## v3.7.16
+
+### 🐛 Bug Fixes
+
+- **A Tautulli "Playback Start" webhook sent to the legacy `/webhook` route was processed as a full watched event, which could delete the episode you just started playing** — the newer `/api/integration/tautulli/webhook` route already guarded playback-start events (only acting on them for a held `e1+`-style activation, ignoring them otherwise), but that guard lived in the route handler, not in the shared `process_watch_event()` it calls. The legacy `/webhook` route (still the one many existing Tautulli setups point at) calls `process_watch_event()` directly and had no such guard, so a playback-start on a non-held series ran the full watched pipeline — updating activity to the just-started episode, unmonitoring it, and running keep-window/finale-release cleanup on it. On a season finale with `release_keep_on_finale` enabled and no `grace_watched` set, this deleted the file mid-playback. Fixed: the guard now lives inside `process_watch_event()` itself, so every caller (including the legacy route) is protected; the integration route's duplicate copy of the same logic was removed. (`integrations/tautulli.py`, #62)
+
+---
+
+## v3.7.15
+
+### 🐛 Bug Fixes
+
+- **Approving a queued deletion did nothing — "Successfully deleted 0 episode(s)", episode reappears in the queue next cleanup run** — regression from v3.7.12's dry-run fix. `pending_deletions.approve_deletions()` still called `delete_episodes_immediately()` with its old positional shape (`episode_file_ids, False, series_title`), which doesn't match the new signature (`episodes, series_id, series_title, ...`). Since `episodes` was expected to be a list of dicts but got bare file-ID ints, the first `.get()` call raised immediately — silently swallowed by the batch's exception handler, so nothing was deleted and no real error surfaced. Fixed: `approve_deletions()` now builds proper episode dicts and calls the current signature, explicitly forcing `rule_dry_run=False` since approving from the queue is the explicit confirmation to delete regardless of the dry-run setting that queued it. (`pending_deletions.py`, #35)
+
+---
+
 ## v3.7.14
 
 ### 🐛 Bug Fixes
