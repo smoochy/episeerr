@@ -1,5 +1,32 @@
 # Changelog
 
+## v3.8.0
+
+### ✨ New Features
+
+- **Hold Automation (Vacation Mode)** — a single toggle on the Scheduler / Global Settings page that pauses everything: webhook-triggered episode processing, scheduled/manual cleanup, and movie cleanup. Gated at the single choke point `media_processor.main()` already runs every webhook and cleanup call through, so grace/dormant inactivity rules simply don't fire while held — no more coming back from vacation to a show deleted because nobody watched it while you were away. (`media_processor.py`, `episeerr.py`, `templates/scheduler_admin.html`)
+- **Missed watch-event detection** — once at startup, Episeerr checks Plex/Jellyfin/Emby/Tautulli's own watch history for anything newer than what's on record, and — deliberately — does **not** replay it automatically. Every source has some gap between its own definition of "watched" and Episeerr's configured detection threshold, so an inferred replay could quietly do the wrong thing. Instead, anything found lands as a **pending watch event** (new section on the Pending Deletions page) for you to **Process** (run it through the exact same path a live webhook would have) or **Clear** (ignore it). Off by default (`reconcile_enabled`). (`reconcile.py`, `pending_watch_events.py`, `templates/pending_deletions.html`)
+- **`episeerr_delay` startup safety net** — a second, always-on startup check (no toggle, no inference involved) for any series still carrying the `episeerr_delay` tag, which can only happen if a live `SeriesAdd` webhook never got to process it (Episeerr was down at the time). Cancels anything Sonarr already grabbed while waiting, then runs the same rule logic the live webhook would have. (`reconcile.py`)
+- **`episeerr_default` tag now resolves dynamically** to whichever rule is currently set as your default (`config['default_rule']`), instead of only matching a rule literally named "default" — so renaming your default rule doesn't silently break tagging with `episeerr_default`. Otherwise behaves exactly like any other rule tag: not bound to a delay profile, swapped for the real resolved rule tag once processed. Pair it with `episeerr_delay` yourself (same as any rule tag) if there's a chance Episeerr might be down when you apply it.
+
+### 🐛 Bug Fixes
+
+- **Sonarr tag-based drift detection and orphan recovery didn't know about `episeerr_default`'s dynamic resolution** — `validate_series_tag()` and `reconcile_series_drift()`'s orphan-recovery branch each had their own older, separate tag-matching logic that only recognized a rule literally named "default." A series tagged `episeerr_default` on an install where the default rule had been renamed away from "default" would fail orphan recovery every single cleanup cycle, and drift-detection would never notice or correct it. Both now resolve through the same shared `resolve_rule_from_tags()` the live webhook handler and the `episeerr_delay` sweep already use, so all four reconciliation paths agree. (`episeerr_utils.py`)
+
+### 🔧 Internal
+
+- Extracted the ~200-line inline rule-processing block from the live Sonarr `SeriesAdd` webhook handler into shared `episeerr_utils` functions (`resolve_rule_from_tags`, `ensure_series_tracked_under_rule`, `apply_initial_rule_selection`) so the live webhook path, the `episeerr_delay` startup sweep, and drift detection can never drift apart from each other again. (`webhooks.py`, `episeerr_utils.py`)
+
+---
+
+## v3.7.18
+
+### 🐛 Bug Fixes
+
+- **The v3.7.16 fix for the "episode you're watching gets deleted" bug (#62) didn't actually work — Tautulli "Playback Start" webhooks still ran the full watched pipeline and deleted the episode mid-playback, even after upgrading.** Root cause: the guard checks `data.get('notification_type') == 'playback start'`, and both the README's and in-app documentation's JSON templates told users to populate that field with `"notification_type": "{notification_type}"` — but `{notification_type}` isn't a real Tautulli placeholder. Tautulli sends the literal, unsubstituted text `"{notification_type}"` back verbatim, which never equals `'playback start'`, so the guard never fired regardless of which webhook URL was configured. Fixed: the README's "Playback Start" agent template now uses a hardcoded literal `"notification_type": "playback start"` (no braces — not a placeholder, so it can't fail to substitute) and the field has been dropped entirely from the "Watched" agent template, where it was doing nothing. Also updated the in-app documentation page and the route handler's docstring to match. (`README.md`, `templates/documentation.html`, `integrations/tautulli.py`, #62)
+
+---
+
 ## v3.7.17
 
 ### 🐛 Bug Fixes
