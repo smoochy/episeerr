@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.8.2
+
+### 🐛 Bug Fixes
+
+- **Watched events silently stopped fetching next episodes (regression from v3.8.1)** — v3.8.1 switched the Jellyfin/Emby/Tautulli/Plex integrations to write each webhook's payload to a per-event randomized temp filename instead of a shared fixed one, to stop concurrent watch events from clobbering each other's file. `media_processor.py` was never updated to read that path, so every watched event fell through to cleanup mode instead of being processed — next episodes stopped being fetched entirely for anyone on v3.8.1. `media_processor.py` now reads the per-event file it's actually handed, falling back to the old fixed path for cleanup/manual runs. (`media_processor.py`)
+- **Per-event temp files were never cleaned up** — a side effect of the same v3.8.1 change: unlike the old shared fixed filename (which just got overwritten each time), the new per-event files had nothing removing them, so `/app/temp/` would accumulate one JSON file per watch event indefinitely. Each integration now deletes its temp file once `media_processor.py` returns. (`integrations/jellyfin.py`, `integrations/emby.py`, `integrations/tautulli.py`, `integrations/plex.py`)
+
 ## v3.8.1
 
 ### 🐛 Bug Fixes

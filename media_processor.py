@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import requests
 import logging
 from logging.handlers import RotatingFileHandler
@@ -471,10 +472,11 @@ def get_episode_tracking_key(series_name, season, episode, user_name):
     return f"{series_name}:S{season}E{episode}:{user_name}"
 
 
-def get_server_activity():
+def get_server_activity(filepath=None):
     """Read current viewing details from server webhook stored data."""
     try:
-        filepath = '/app/temp/data_from_server.json'
+        if filepath is None:
+            filepath = '/app/temp/data_from_server.json'
         if not os.path.exists(filepath):
             filepath = '/app/temp/data_from_tautulli.json'
 
@@ -3226,12 +3228,15 @@ def main():
         logger.info("⏸️ Automation held - skipping webhook/cleanup processing")
         return False
 
-    # Check if this is a webhook call (has recent webhook data)
-    series_name, season_number, episode_number, thetvdb_id, themoviedb_id = get_server_activity()
+    # Webhook payload path: each integration (Jellyfin/Emby/Tautulli/Plex) now
+    # writes its own per-event temp file and passes it as argv[1], so
+    # concurrent events can't clobber each other's file. Cleanup/manual runs
+    # (webhooks.py's legacy /webhook route, scheduled cleanup) call this with
+    # no argv and fall back to the fixed legacy path.
+    webhook_file = sys.argv[1] if len(sys.argv) > 1 else '/app/temp/data_from_server.json'
 
-    # ONLY process as webhook if this was called BY a webhook (not manual cleanup)
-    # Add a flag or check timestamp to distinguish
-    webhook_file = '/app/temp/data_from_server.json'
+    # Check if this is a webhook call (has recent webhook data)
+    series_name, season_number, episode_number, thetvdb_id, themoviedb_id = get_server_activity(webhook_file)
 
     try:
         # Check if webhook file is recent (within last few minutes)

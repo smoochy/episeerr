@@ -159,6 +159,11 @@ def process_watch_event(data: dict) -> dict:
             text=True,
         )
 
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+
         if result.returncode != 0:
             logger.error(
                 f"[Tautulli] media_processor failed (rc={result.returncode}): {result.stderr}"
