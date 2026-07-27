@@ -524,8 +524,9 @@ If you use the `+` activation modifier (`s*e1+`, `e1+`, etc.) and want the hold 
    ```
 4. **Save**
 
-> For non-held series (no `+` modifier), playback start events are silently ignored — no risk of double-processing.
-> Do not add `"notification_type"` to the "Watched" agent's template — leave it out there, since a hardcoded `"playback start"` on the Watched agent would make watched events get ignored too.
+> Playback start runs in **prefetch-only** mode: your get-count is applied, so the next episode is staged as soon as you start watching. Everything triggered by *finishing* an episode — keep-window deletion, finale keep-release, sequential season advance, series-ended unmonitor — is deferred to the "Watched" event, so nothing is ever deleted while you're mid-episode. Held series (`+` modifier) are the exception: their activation episode releases the hold and processes fully on play start, as before.
+> Configuring the Playback Start agent is optional. Without it, everything still works off the "Watched" event alone — you just get the next episode after finishing rather than at the start.
+> Do not add `"notification_type"` to the "Watched" agent's template — leave it out there, since a hardcoded `"playback start"` on the Watched agent would make watched events prefetch-only and never clean up.
 
 In Tautulli → Settings → General, set **TV Episode Watched Percent** between 50–95% (recommended: 80%).
 
