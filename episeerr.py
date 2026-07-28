@@ -1,4 +1,4 @@
-__version__ = "3.8.1"
+__version__ = "3.8.3"
 from flask import Flask, render_template, request, redirect, url_for, jsonify, session
 import subprocess
 import os
