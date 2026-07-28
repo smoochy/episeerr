@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.8.3
+
+### 🐛 Bug Fixes
+
+- **Tautulli "Playback Start" did nothing for non-held series (regression from v3.7.18)** — the v3.7.18 fix for #62 (full watched-processing on playback start deleting the episode being played) correctly made the guard fire, but the guard suppressed *everything* on non-held playback start, including the harmless next-episode prefetch that #62 also asked for. Playback start now runs in **prefetch-only** mode instead: the next episode is staged immediately, while everything triggered by *finishing* an episode (keep-window deletion, finale keep-release, sequential season advance, series-ended unmonitor, unmonitoring the current episode) still waits for the "Watched" event. Held (`+` modifier) series are unchanged — their activation episode still releases the hold and processes fully on play start. Movies are unaffected (nothing to prefetch). Configuring "Playback Start" in Tautulli remains entirely optional — watch detection itself is unaffected either way, unlike Jellyfin/Emby's polling mode which does depend on it. Contributed by @smoochy. (`integrations/tautulli.py`, `media_processor.py`)
+
 ## v3.8.2
 
 ### 🐛 Bug Fixes
