@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.8.4
+
+### 🐛 Bug Fixes
+
+- **Disabling a service didn't stop its background sync** — toggling a service off in Setup only flipped the DB flag; it never told the integration to stop. Plex/Trakt's watchlist-sync scheduler kept polling (and erroring on stale config) after being "disabled." The toggle now calls the integration's start/stop hook so disabling actually disables. (`episeerr.py`)
+- **No way to fully remove a service's saved config** — switching media servers (e.g. Plex → Jellyfin) left the old config in place with no way to clear it, so it kept getting polled with stale/wrong values. Each integration card in Setup now has a Remove button that deletes its saved config, stops any running scheduler, and cleans up the matching auto-added quick link. (`episeerr.py`, `settings_db.py`, `templates/setup.html`)
+
 ## v3.8.3
 
 ### 🐛 Bug Fixes
