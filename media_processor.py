@@ -3118,6 +3118,17 @@ def reconcile_future_seasons():
                     # to Step 2 below — it's not "nothing to fix" anymore now that Step 2
                     # has a no-always_have fallback of its own to catch the premiere.
                     monitored_ids = [ep['id'] for ep in eps if ep.get('monitored', False)]
+
+                    # If this season is exactly the one the rule's own get-next
+                    # tracking (last_season) would advance into, any monitoring
+                    # found here is that rule's own get-count logic doing its job —
+                    # for any show, series-monitored or not, whole season or a
+                    # single pre-fetched episode. Only Sonarr's own unrelated
+                    # auto-monitor-new-season behavior should be corrected below.
+                    last_season = series_data.get('last_season')
+                    if last_season is not None and season_num == last_season + 1:
+                        continue
+
                     if monitored_ids:
                         unmon_resp = http.put(
                             f"{SONARR_URL}/api/v3/episode/monitor",
