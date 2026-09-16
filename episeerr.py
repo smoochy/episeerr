@@ -1,4 +1,4 @@
-__version__ = "3.9.0"
+__version__ = "3.9.1"
 from flask import Flask, render_template, request, redirect, url_for, jsonify, session
 import subprocess
 import os
@@ -2758,6 +2758,66 @@ def radarr_movies():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/downloads/progress')
+def downloads_progress():
+    """Combined Sonarr + Radarr download queue with percent-complete, for
+    surfaces (like the HA integration) that want a single 'what's downloading
+    right now' view rather than separate per-service queue counts."""
+    items = []
+
+    def _percent(size, sizeleft):
+        if not size:
+            return None
+        return round((1 - (sizeleft or 0) / size) * 100, 1)
+
+    try:
+        prefs = sonarr_utils.load_preferences()
+        sonarr_url = prefs.get('SONARR_URL')
+        sonarr_key = prefs.get('SONARR_API_KEY')
+        if sonarr_url and sonarr_key:
+            resp = http.get(
+                f"{sonarr_url.rstrip('/')}/api/v3/queue?includeSeries=true&includeEpisode=true",
+                headers={'X-Api-Key': sonarr_key}, timeout=10
+            )
+            if resp.ok:
+                for r in resp.json().get('records', []):
+                    series_title = (r.get('series') or {}).get('title')
+                    items.append({
+                        'source': 'sonarr',
+                        'title': series_title or r.get('title', 'Unknown'),
+                        'episode': r.get('title') if series_title else None,
+                        'status': r.get('status'),
+                        'percent': _percent(r.get('size'), r.get('sizeleft')),
+                        'timeleft': r.get('timeleft'),
+                        'protocol': r.get('protocol'),
+                    })
+    except Exception as e:
+        app.logger.warning(f"downloads_progress: Sonarr queue fetch failed: {e}")
+
+    try:
+        cfg, headers = _radarr_headers()
+        if cfg:
+            resp = http.get(
+                f"{cfg['url'].rstrip('/')}/api/v3/queue?includeMovie=true",
+                headers=headers, timeout=10
+            )
+            if resp.ok:
+                for r in resp.json().get('records', []):
+                    items.append({
+                        'source': 'radarr',
+                        'title': (r.get('movie') or {}).get('title') or r.get('title', 'Unknown'),
+                        'episode': None,
+                        'status': r.get('status'),
+                        'percent': _percent(r.get('size'), r.get('sizeleft')),
+                        'timeleft': r.get('timeleft'),
+                        'protocol': r.get('protocol'),
+                    })
+    except Exception as e:
+        app.logger.warning(f"downloads_progress: Radarr queue fetch failed: {e}")
+
+    return jsonify({'success': True, 'count': len(items), 'items': items})
+
+
 @app.route('/api/movie-rules/assign', methods=['POST'])
 def api_assign_movie_rule():
     """Assign or unassign a movie rule to a Radarr movie via episeerr_ tags."""
@@ -2819,7 +2879,11 @@ def api_assign_movie_rule():
 
 @app.route('/api/radarr/quality-profiles')
 def radarr_quality_profiles():
-    """Fetch quality profiles from Radarr."""
+    """Fetch quality profiles from Radarr, including which one is preferred
+    (from the stored default_quality_profile_id, same mechanism the Sonarr
+    add-series route already uses) - callers that just want a sane default
+    (not "Any", which permits CAM/TELESYNC) should use preferred_id rather
+    than assuming profiles[0]."""
     cfg, headers = _radarr_headers()
     if not cfg:
         return jsonify({'success': False, 'error': 'Radarr not configured'}), 503
@@ -2827,7 +2891,9 @@ def radarr_quality_profiles():
         resp = http.get(f"{cfg['url'].rstrip('/')}/api/v3/qualityprofile", headers=headers, timeout=10)
         resp.raise_for_status()
         profiles = [{'id': p['id'], 'name': p['name']} for p in resp.json()]
-        return jsonify({'success': True, 'profiles': profiles})
+        from settings_db import get_preferred_quality_profile
+        preferred_id = get_preferred_quality_profile('radarr', profiles) if profiles else None
+        return jsonify({'success': True, 'profiles': profiles, 'preferred_id': preferred_id})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -4485,6 +4551,39 @@ def _assign_series_ids_to_rule(config, rule_name, series_ids):
             except Exception as e:
                 app.logger.error(f"always_have processing failed for series {sid}: {e}")
 
+    # A rule that fetches nothing (get_count == 0, e.g. "finished") means stop
+    # everything - unambiguous enough to enforce immediately, unlike the general
+    # get_type/keep_type recompute a partial rule change would need. Without this,
+    # whatever was monitored under the PREVIOUS rule just stays monitored and
+    # Sonarr's own RSS/upgrade search keeps grabbing it, unaware the rule ever
+    # changed (see episeerr project memory 2026-09-04 - The Gentlemen S2 fully
+    # re-downloaded weeks after being moved to "finished").
+    target_get_count = config['rules'][rule_name].get('get_count', 1)
+    if target_get_count == 0:
+        headers = episeerr_utils.get_sonarr_headers()
+        for sid in series_ids:
+            try:
+                episeerr_utils.unmonitor_series(int(sid), headers)
+            except Exception as e:
+                app.logger.error(f"Failed to unmonitor series {sid} on reassignment to '{rule_name}': {e}")
+
+    # A series can pick up a config-only rule assignment (this function)
+    # while it's still sitting in the pending-requests queue - e.g. Joe
+    # manually grabbing an episode via Xadarr's own Sonarr search, which
+    # never touches Episeerr's pending state, then assigning a rule
+    # afterward through the plain "existing series" path instead of the
+    # pending-resolution UI. Without this, that leaves a stale pending
+    # entry behind - the show reads as handled everywhere except the
+    # "needs attention" badge, which never clears.
+    for series_id in series_ids:
+        try:
+            stale = find_pending_request_by_series(series_id)
+            if stale and stale.get('id'):
+                delete_pending_request(stale['id'])
+                app.logger.info(f"Cleared stale pending request for series {series_id} on rule assignment")
+        except Exception as e:
+            app.logger.error(f"Error clearing pending request for series {series_id}: {e}")
+
     # Sync tags to Sonarr
     tag_sync_success = 0
     tag_sync_failed = 0
@@ -4935,7 +5034,12 @@ def api_series_with_status():
                 last_episode = series['lastInfoSync'][:10]  # Extract date part
             elif series.get('previousAiring'):
                 last_episode = series['previousAiring'][:10]
-            
+
+            poster = next(
+                (img['remoteUrl'] for img in series.get('images', []) if img.get('coverType') == 'poster'),
+                None
+            )
+
             enhanced_series.append({
                 'id': series['id'],
                 'title': series['title'],
@@ -4944,7 +5048,8 @@ def api_series_with_status():
                 'year': series.get('year'),
                 'lastEpisode': last_episode,
                 'titleSlug': series.get('titleSlug'),
-                'ended': series.get('ended', False)
+                'ended': series.get('ended', False),
+                'poster': poster
             })
         
         return jsonify({
