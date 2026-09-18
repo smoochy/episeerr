@@ -91,7 +91,7 @@ def _enrich_watched_from_jellyfin(watched_episodes: set, recent_downloads: list)
 
     try:
         from settings_db import get_service
-        from episeerr_utils import normalize_url
+        from episeerr_utils import normalize_url, media_server_auth_headers
 
         svc = get_service('jellyfin', 'default')
         if not svc:
@@ -104,7 +104,7 @@ def _enrich_watched_from_jellyfin(watched_episodes: set, recent_downloads: list)
         if not jf_url or not jf_api_key:
             return
 
-        headers = {'X-Emby-Token': jf_api_key}
+        headers = media_server_auth_headers(jf_api_key)
 
         # Resolve a Jellyfin user UUID to scope the played-status query.
         # GET /Users returns all users (requires an admin-scoped API key).
@@ -597,19 +597,31 @@ def activity_feed():
         except Exception as e:
             logger.error(f"Error reading watched.json: {e}")
         
-        # Last request (from last_request.json)
+        # Last added/requested item (from last_request.json) - any source
+        # (Jellyseerr, direct Sonarr/Radarr add, Xadarr, Episeerr's own add flow, etc.)
         try:
             request_file = os.path.join(activity_dir, 'last_request.json')
             if os.path.exists(request_file):
                 with open(request_file, 'r') as f:
                     last_req = json.load(f)
                     if last_req:
+                        # Older files predate the 'service'/'media_type' fields - fall back
+                        # to the original Jellyseerr-only assumption for those.
+                        media_type = last_req.get('media_type', 'tv')
+                        service = last_req.get('service', 'Jellyseerr/Overseerr')
+
+                        if media_type == 'movie':
+                            details = last_req['title']
+                        else:
+                            requested_seasons = last_req.get('requested_seasons')
+                            details = f"{last_req['title']} (Season {requested_seasons})" if requested_seasons else last_req['title']
+
                         services.append({
-                            'service': 'Jellyseerr/Overseerr',
-                            'icon': 'fa-film',
+                            'service': service,
+                            'icon': 'fa-film' if media_type == 'movie' else 'fa-tv',
                             'color': 'warning',
-                            'action': 'Requested',
-                            'details': f"{last_req['title']} (Season {last_req.get('requested_seasons', '?')})",
+                            'action': 'Requested' if service == 'Jellyseerr/Overseerr' else 'Added',
+                            'details': details,
                             'timestamp': datetime.fromtimestamp(last_req['timestamp']).isoformat(),
                             'action_icon': 'fa-plus-circle'
                         })
