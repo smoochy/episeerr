@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.9.8
+
+### 🐛 Bug Fixes
+
+- **Full-season rules re-searched the season on every watch, so Sonarr could grab the pack again** — with `get_type: seasons` and action `search`, every watched event fired a `SeasonSearch` for the current season, even when the whole season was already downloaded, and any rule sent `EpisodeSearch` for episodes that already had files. On a watch event a seasons rule now means what it originally did: get the episodes left in the season (watched E5 of 10 → E6–E10), monitored and searched as individual episodes. Season-pack searches are back to being only for newly added series. Before searching, the requested episodes are looked up and any that already have a file are skipped; if they're all on disk, no search is sent. Monitoring is unchanged. (`media_processor.py`, #99)
+
 ## v3.9.7
 
 ### 🐛 Bug Fixes
