@@ -1,5 +1,25 @@
 # Changelog
 
+## v4.0.3
+
+### 🐛 Bug Fixes
+
+- **A Keep window could end up with zero actual files if the watched episode itself had none** — Keep's anchor is strictly the webhook-reported watched position, which is correct and unchanged; but if that specific episode had no file for any reason (a race with an earlier cleanup pass, watched-status synced in from somewhere that isn't a local play), Keep would just silently leave the window empty rather than ensuring what it's meant to retain actually exists. "Keep N" should mean N episodes actually exist, not N positions that may or may not have files. When the rule wants the watched episode to stay present (`monitor_watched`, default True) and it has no file, Episeerr now actively monitors/searches for it (respecting the rule's own `action_option`, same as Get) instead of leaving it empty. Does not change which episode is kept, or the "remove everything before the watched position" rule - purely closes the gap between Keep saying it's keeping something and that thing actually being on disk. From discussion #102. (`media_processor.py`)
+
+## v4.0.2
+
+### 🐛 Bug Fixes
+
+- **Jellyfin matched series by title only, with no fallback when display titles don't match Sonarr's exactly** — the Jellyfin integration resolved a watched episode's series purely via `get_series_id(series_name)`, a title string match, even though `get_series_id()` already supports TVDB-ID matching as its preferred, more reliable path (used elsewhere via the Sonarr webhook). Jellyfin's session data already carries the playing episode's `SeriesId`; a new `_resolve_series_tvdb_id()` resolves that to the series' TVDB ID via one extra lightweight Jellyfin API call (the *episode's* own TVDB ID isn't useful here — only the parent Series item carries the series-level one), and passes it into the existing `get_series_id(series_name, thetvdb_id=...)` call. Falls straight back to the exact same title match as before if the TVDB ID is missing or doesn't resolve to anything in Sonarr, so this is purely additive - no behavior change for anyone without clean TVDB metadata in Jellyfin. Verified live against a real Jellyfin + Sonarr pair before release. From discussion #102. (`integrations/jellyfin.py`)
+
+## v4.0.1
+
+### 🐛 Bug Fixes
+
+- **Premiere's swap never actually happened if the new season's premiere hadn't aired-and-downloaded by the time a cleanup cycle saw it** — `reconcile_premiere_swaps()` only ever checked `hasFile`, never actually triggered a monitor/search for the newly-current season, so if it wasn't already downloaded nothing ever made it get downloaded. `reconcile_future_seasons()` couldn't fill that gap either, since `resolve_current_season()` only ever points at an already-aired season, so there's nothing for a `c` token to correctly match while the new season is still future - that function now explicitly skips `c`-token rules instead of silently failing to match. `reconcile_premiere_swaps()` now proactively monitors and searches the newly-current premiere the moment it's detected, while still holding off on evicting the old one until the new one is actually confirmed on disk. Reported against the real v4.0.0 code the same day it shipped - discussion #102. (`media_processor.py`)
+
+- **Sonarr v5 beta rejects every rule tag Episeerr tries to create** — Sonarr v5 enforces `^[a-z0-9-]+$` on tag labels (lowercase, digits, hyphens only); Episeerr always built rule tags as `episeerr_<rule_name>`, and the underscore (plus any uppercase or underscores already in the rule name, e.g. `episeerr_Ended_unmonitor`) gets rejected outright. New tag creation silently failed, so new/renamed rules never got tagged in Sonarr, which cascaded into `sync_rule_tag_to_sonarr()` failures, drift detection moving series back to their old rule on the next reconcile, and `monitorNewItems` never getting set to `none`. Existing already-created tags were unaffected (Sonarr doesn't re-validate stored labels), so this only bit new rules going forward. New tags are now created as `episeerr-<rule-name>`, sanitized (lowercased, every non-`[a-z0-9-]` character collapsed to a hyphen) so they always pass Sonarr's validation on both v4 and v5. Tag resolution (`resolve_rule_from_tags`, `validate_series_tag`, delay-profile/select-tag detection, etc.) now accepts both the legacy `episeerr_` and new `episeerr-` prefixes, matching rule names tolerantly of hyphen vs. underscore, so nothing already tagged under the old format breaks. A new idempotent `migrate_legacy_episeerr_tags()` runs on every startup and renames existing `episeerr_*` tags to their sanitized form in place (same tag ID, so no series loses its association) — safe to run repeatedly, and harmless on v4 too since hyphens are valid there as well. Reported running Sonarr v5 beta 5.0.0.2635. (`episeerr_utils.py`, `episeerr.py`, #104)
+
 ## v4.0.0
 
 ### ✨ New Feature
