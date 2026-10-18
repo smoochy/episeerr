@@ -1393,9 +1393,28 @@ def process_episodes_for_webhook(series_id, season_number, episode_number, rule,
             logger.error(f"Could not find current episode S{season_number}E{episode_number}")
             return
 
-        # Unmonitoring the current episode means "done with it" — on playback
-        # start it is still being played, so leave it monitored until watched.
-        if not rule.get('monitor_watched', True) and not prefetch_only:
+        # Keep's anchor is whatever's reported watched - "Keep N" should mean N
+        # episodes actually exist, not N positions that may or may not have
+        # files (episeerr discussion #102). If the rule wants this episode to
+        # stay present (monitor_watched, default True) but it has no file for
+        # any reason (a race with an earlier cleanup, watched-status synced in
+        # from somewhere that isn't a local play), actively fetch it instead
+        # of silently leaving the keep window empty. Respects the rule's own
+        # action_option the same way Get does - only actually searches if
+        # the rule says to, otherwise just monitors and leaves it to Sonarr's
+        # own RSS. Unmonitoring on completion (the "done with it" case below)
+        # is unaffected - these are mutually exclusive on monitor_watched.
+        if rule.get('monitor_watched', True):
+            if not prefetch_only and not current_episode.get('hasFile', False):
+                monitor_or_search_episodes(
+                    [current_episode['id']], rule.get('action_option', 'monitor'),
+                    series_id, series_title, get_type
+                )
+                logger.info(
+                    f"Keep anchor S{season_number}E{episode_number} has no file — "
+                    f"triggered {rule.get('action_option', 'monitor')} to get it"
+                )
+        elif not prefetch_only:
             unmonitor_episodes([current_episode['id']])
 
         if not skip_rule_processing:
@@ -3226,6 +3245,16 @@ def reconcile_future_seasons():
         parsed_ah = parse_always_have(always_have) if always_have else None
         is_sequential = parsed_ah['is_sequential'] if parsed_ah else False
 
+        # 'c' (current season) rules are deliberately not handled here - this
+        # function's whole model is "pre-monitor an announced season ahead of
+        # air date", but resolve_current_season() only ever points at a season
+        # that has *already* aired, so there's nothing for a 'c' token to
+        # correctly match yet while a season is still future. reconcile_premiere_swaps()
+        # (cleanup Phase 0.6) owns the entire 'c' lifecycle instead, including
+        # proactively monitoring/searching the newly-current season once it airs.
+        if parsed_ah and parsed_ah['has_c']:
+            continue
+
         for series_id_str, series_data in list(rule_data.get('series', {}).items()):
             series_id = int(series_id_str)
             activation_seasons = series_data.get('activation_seasons', {})
@@ -3566,10 +3595,39 @@ def reconcile_premiere_swaps():
                      and ep['episodeNumber'] == activation_ep),
                     None
                 )
-                # Wait for the new premiere to actually be on disk - swapping on
-                # "newly aired" alone would open a gap with nothing available,
-                # which is exactly what #102 asked to avoid.
-                if not new_ep or not new_ep.get('hasFile', False):
+                if not new_ep:
+                    continue  # doesn't exist in Sonarr yet - nothing to act on
+
+                if not new_ep.get('hasFile', False):
+                    # Newly current but not downloaded yet - get it moving, but
+                    # don't touch the old one until this one is actually on disk
+                    # (swapping on "newly aired" alone would open a gap with
+                    # nothing available, which is exactly what #102 asked to
+                    # avoid - reported in discussion #102 by Padde86: nothing
+                    # was proactively monitoring/searching the new premiere,
+                    # so hasFile could never become true on its own).
+                    if not new_ep.get('monitored', False):
+                        mon_resp = http.put(
+                            f"{SONARR_URL}/api/v3/episode/monitor",
+                            headers=headers,
+                            json={"episodeIds": [new_ep['id']], "monitored": True}
+                        )
+                        if mon_resp.ok:
+                            http.post(
+                                f"{SONARR_URL}/api/v3/command",
+                                headers=headers,
+                                json={"name": "EpisodeSearch", "episodeIds": [new_ep['id']]}
+                            )
+                            cleanup_logger.info(
+                                f"🔄 Premiere swap: new current season S{current_season} for "
+                                f"series {series_id} not downloaded yet - monitored & searched, "
+                                f"keeping S{held_season} until it's confirmed on disk"
+                            )
+                        else:
+                            cleanup_logger.error(
+                                f"Premiere swap: failed to monitor incoming S{current_season}E"
+                                f"{activation_ep} for series {series_id}: {mon_resp.text}"
+                            )
                     continue
 
                 old_ep = next(
